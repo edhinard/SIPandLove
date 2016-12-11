@@ -1,0 +1,28 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 172.20.56.7:5060;received=172.20.56.7;branch=z9hG4bKgz6e654vohdvez3h634gco4vd;Role=3;Hpt=8e42_36;TRC=ffffffff-ffffffff
+Call-ID: sbcthLNQ1nQhZc6cSjcc1EZAAAjQxpjGn010cE6x@BAa.aI.BHB.BAB
+From: <sip:0960700013@sip.osk.com;user=phone;noa=national;srvattri=national>;tag=pGpQAhGc
+To: <sip:+33960700014@sip.osk.com;user=phone>;tag=sQzyEngIMwaYeOCX8qFdia69sP0OpUQb
+CSeq: 16204 INVITE
+Contact: <sip:+33960700014@172.20.35.253:6064;ob>
+Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS
+Supported: replaces, 100rel, timer, norefersub
+Session-Expires: 1800;refresher=uac
+Require: timer
+Content-Type: application/sdp
+Content-Length:   278
+
+v=0
+o=- 3690005142 3690005143 IN IP4 172.20.35.253
+s=pjmedia
+b=AS:84
+t=0 0
+a=X-nat:0
+m=audio 4002 RTP/AVP 98 96
+c=IN IP4 172.20.35.253
+b=TIAS:64000
+a=rtcp:4003 IN IP4 172.20.35.253
+a=sendrecv
+a=rtpmap:98 speex/16000
+a=rtpmap:96 telephone-event/8000
+a=fmtp:96 0-16

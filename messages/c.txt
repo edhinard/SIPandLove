@@ -1,0 +1,15 @@
+REGISTER sip:sip.osk.com SIP/2.0
+Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjl9FY-zii8ljMGjNxxwqFrOFtKs7DnIJ.
+Route: <sip:172.20.56.7;lr>
+Max-Forwards: 70
+From: <sip:+33960700014@sip.osk.com>;tag=QNUPkiWuoMCQvYGw6VvQX9tzF-.1Oa5w
+To: <sip:+33960700014@sip.osk.com>
+Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb
+CSeq: 60012 REGISTER
+User-Agent: PJSUA v2.5.5 Linux-4.8.0.27/x86_64/glibc-2.24
+Contact: <sip:+33960700014@172.20.35.253:6064;ob>
+Expires: 300
+Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS
+Authorization: Digest username="+33960700014@sip.osk.com", realm="sip.osk.com", nonce="6drD1oLmHT0xtdg4oDmxdg==", uri="sip:sip.osk.com", response="bcd9f2a64d4675976e19495bad67e30d", algorithm=MD5, cnonce="Hf1rkJAuZ0-ukOSgnYE.v6.VWEYBj2TR", qop=auth, nc=00000001
+Content-Length:  0
+

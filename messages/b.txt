@@ -1,0 +1,9 @@
+SIP/2.0 401 Unauthorized
+Via: SIP/2.0/UDP 172.20.35.253:6064;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz;rport=6064
+Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb
+From: <sip:+33960700014@sip.osk.com>;tag=QNUPkiWuoMCQvYGw6VvQX9tzF-.1Oa5w
+To: <sip:+33960700014@sip.osk.com>;tag=Ihh0QVlz
+CSeq: 60011 REGISTER
+WWW-Authenticate: Digest realm="sip.osk.com",nonce="6drD1oLmHT0xtdg4oDmxdg==",algorithm=MD5,qop="auth"
+Content-Length: 0
+

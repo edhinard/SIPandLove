@@ -1,0 +1,12 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 172.20.35.253:6064;branch=z9hG4bKPj9V2D9T4Joy2p1ZqR7NGDVOU-eBURzm7d;rport=6064
+Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb
+From: <sip:+33960700014@sip.osk.com>;tag=ohhL0Cn8uV-CLkq7VZRzQmefK0vdZXcw
+To: <sip:+33960700014@sip.osk.com>;tag=VQzBFlES
+CSeq: 60014 REGISTER
+Authentication-Info: nextnonce="V0Dlfcmjen3atleWJCOm/Q==",qop=auth,rspauth="71e01e9f07352c5423ef215b572f3ab3",cnonce="Hf1rkJAuZ0-ukOSgnYE.v6.VWEYBj2TR",nc=00000001
+Accept-Resource-Priority: wps.4
+P-Associated-URI: <sip:+33960700014@sip.osk.com>,<sip:+33960700014@sip.osk.com;user=phone>
+Contact: <sip:+33960700014@172.20.35.253:6064;ob>;expires=0
+Content-Length: 0
+

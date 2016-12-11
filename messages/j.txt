@@ -1,0 +1,8 @@
+SIP/2.0 200 OK
+Via: SIP/2.0/UDP 172.20.35.253:6064;branch=z9hG4bKPj8YlX0qFdV70VvWYTdW6hAqhky6GG-m3E;rport=6064
+Call-ID: sbcthLNQ1nQhZc6cSjcc1EZAAAjQxpjGn010cE6x@BAa.aI.BHB.BAB
+From: <sip:+33960700014@sip.osk.com;user=phone>;tag=sQzyEngIMwaYeOCX8qFdia69sP0OpUQb
+To: <sip:0960700013@sip.osk.com;user=phone;noa=national;srvattri=national>;tag=pGpQAhGc
+CSeq: 1881 BYE
+Content-Length: 0
+

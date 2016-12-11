@@ -1,0 +1,1 @@
+REGISTER sip:sip.osk.com SIP/2.0

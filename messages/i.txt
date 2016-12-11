@@ -1,0 +1,12 @@
+BYE sip:172.20.56.7:5060;Dpt=ea9a-200;Hpt=8e42_16;CxtId=4;TRC=ffffffff-ffffffff SIP/2.0
+Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPj8YlX0qFdV70VvWYTdW6hAqhky6GG-m3E
+Max-Forwards: 70
+From: <sip:+33960700014@sip.osk.com;user=phone>;tag=sQzyEngIMwaYeOCX8qFdia69sP0OpUQb
+To: <sip:0960700013@sip.osk.com;user=phone;noa=national;srvattri=national>;tag=pGpQAhGc
+Call-ID: sbcthLNQ1nQhZc6cSjcc1EZAAAjQxpjGn010cE6x@BAa.aI.BHB.BAB
+CSeq: 1881 BYE
+Authorization: Digest username="+33960700014@sip.osk.com", realm="sip.osk.com", nonce="", uri="sip:172.20.56.7:5060;Dpt=ea9a-200;Hpt=8e42_16;CxtId=4;TRC=ffffffff-ffffffff", response=""
+User-Agent: PJSUA v2.5.5 Linux-4.8.0.27/x86_64/glibc-2.24
+Warning: 399 pjsua "Call duration exceeded"
+Content-Length:  0
+

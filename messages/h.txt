@@ -1,0 +1,9 @@
+ACK sip:+33960700014@172.20.35.253:6064;ob SIP/2.0
+Via: SIP/2.0/UDP 172.20.56.7:5060;branch=z9hG4bKvoezeh9vo46otd9dbgzgvdd6d;Role=3;Hpt=8e42_36;TRC=ffffffff-ffffffff
+Call-ID: sbcthLNQ1nQhZc6cSjcc1EZAAAjQxpjGn010cE6x@BAa.aI.BHB.BAB
+From: <sip:0960700013@sip.osk.com;user=phone;noa=national;srvattri=national>;tag=pGpQAhGc
+To: <sip:+33960700014@sip.osk.com;user=phone>;tag=sQzyEngIMwaYeOCX8qFdia69sP0OpUQb
+CSeq: 16204 ACK
+Max-Forwards: 62
+Content-Length: 0
+

@@ -1,0 +1,8 @@
+SIP/2.0 100 Trying
+Via: SIP/2.0/UDP 172.20.56.7:5060;received=172.20.56.7;branch=z9hG4bKgz6e654vohdvez3h634gco4vd;Role=3;Hpt=8e42_36;TRC=ffffffff-ffffffff
+Call-ID: sbcthLNQ1nQhZc6cSjcc1EZAAAjQxpjGn010cE6x@BAa.aI.BHB.BAB
+From: <sip:0960700013@sip.osk.com;user=phone;noa=national;srvattri=national>;tag=pGpQAhGc
+To: <sip:+33960700014@sip.osk.com;user=phone>
+CSeq: 16204 INVITE
+Content-Length:  0
+
