@@ -9,7 +9,7 @@ CRLF = b'\r\n'
 STATUS_LINE_RE = re.compile(b'(?:\r\n|^)SIP/2.0 (?P<code>[1-7]\d\d) (?P<reason>.+)\r\n', re.IGNORECASE)
 REQUEST_LINE_RE = re.compile(b'(?:\r\n|^)(?P<method>[A-Z]+) (?P<requesturi>[^ ]+) SIP/2.0\r\n', re.IGNORECASE)
 CONTENT_LENGTH_RE = re.compile(b'\r\n(?:Content-length|l)[ \t]*:\s*(?P<length>\d+)\s*(\r\n|$)', re.IGNORECASE)
-UNFOLDING_RE = re.compile(b'[ \t]*' + CRLF + b'[ \t]+')
+UNFOLDING_RE = re.compile(b'[ \t]*\r\n[ \t]+')
 class DecodeInfo:
     def __init__(self, buf):
         self.buf = buf
@@ -152,7 +152,8 @@ class SIPRequest(SIPMessage):
         return SIPResponse(code, reason, headers=self.headers)
 
 class REGISTER(SIPRequest):
-    pass
+    def authenticate(self, auth, password):
+        pass
 class INVITE(SIPRequest):
     pass
 class ACK(SIPRequest):

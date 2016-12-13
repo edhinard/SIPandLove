@@ -11,13 +11,28 @@ import Transport
 class TransactionManager:
     def __init__(self, transport):
         self.transport = transport
-    def run(self):
-        loop = asyncio.get_event_loop()
-        loop.add_reader(self.transport.pipe.fileno(), self.gotmessage)
-        loop.run_forever()
-    def gotmessage(self):
-        print(self.transport.recv())
+        self.clienttransactions = {}
+        self.servertransactions = {}
         
+    def messagereceived(self):
+        message = self.transport.recv()
+        
+        if isinstance(message, Message.SIPRequest):
+            id = ServerTransaction.id(message)
+            self.servertransactions[id] = ServerTransaction(message)
+
+
+            if not id in self.servertransactions:
+                self.servertransactions[id] = ServerTransaction(message)
+            transaction = self.servertransactions[id]
+
+        if isinstance(message, Message.SIPResponse):
+            id = ClientTransaction.id(message)
+
+
+            
+    def send(self, message):
+        transaction = ClientTransaction(message.headers, message.method)
 
 class Transaction:
     def __init__(self, branch, method):
@@ -32,11 +47,16 @@ class ClientTransaction(Transaction):
     
 
 class ServerTransaction(Transaction):
-    def __init__(self, branch, method, sentby):
+    @staticmethod
+    def id(request):
+        return (request.branch, request.method, request.sentby)
+    
+    def __init__(self, request):
         self.id = (branch, method, sentby)
         Transaction.__init__(self, branch, method)
 
     
 t = Transport.Transport('x')
-m = TransactionManager(t)
-m.run()
+manager = TransactionManager(t)
+loop = asyncio.get_event_loop()
+loop.add_reader(t.transport.pipe.fileno(), t.messagereceived)
