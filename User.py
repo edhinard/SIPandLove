@@ -2,47 +2,37 @@
 # coding: utf-8
 
 import sys
-import asyncio
 
 import Message
 import Transaction
 
 class User:
+    users = {}
+    
     def __init__(self, sipuri, password=None, invitecb=None):
+        if sipuri in User.users:
+            raise RuntimeError("Duplicate User: {}".format(sipuri))
         self.sipuri = sipuri
         self.password = password
         self.invitecb = invitecb
         self.registered = False
+        self.registering = None
+        User.users[self.sipuri] = self
+
+    def __del__(self):
+        del User.users[self.sipuri]
         
-    async def register(self):
+    def register(self, cb=):
+        if self.registering:
+            raise RuntimeError("Already registering")
         reg = Message.REGISTER(self.sipuri)
-        m = await Transaction.manager.send(reg)
-        if m.code == 401:
-            reg.authenticate(m.headers['WWW-Authenticate'], self.password)
-            m = await Transaction.manager.send(reg)
-        elif m.code == 407:
-            reg.authenticate(m.headers['Proxy-Authenticate'], self.password)
-            m = await Transaction.manager.send(reg)
+        self.registering = UA.UAC(reg, cb=self._registercb)
 
-        if m.code == 200:
-            self.registered = True
-            return self
-
-        raise Exception(str(m))
+    def _registercb(self, result):
+        self.registering = None
         
-    async def invite(self, to, sdp, audioin, audioout):
+    def invite(self, to, sdp, audioin, audioout):
         inv = Message.INVITE()
-        m = await Transaction.manager.send(reg)
-        if m.code == 401:
-            reg.authenticate(m.headers['WWW-Authenticate'], self.password)
-            m = await Transaction.manager.send(reg)
-        elif m.code == 407:
-            reg.authenticate(m.headers['Proxy-Authenticate'], self.password)
-            m = await Transaction.manager.send(reg)
+        self.invitations.append(UA.UAC(inv, self))
 
-        if m.code == 200:
-            self.registered = True
-            return self
-
-        raise Exception(str(m))
-
+        

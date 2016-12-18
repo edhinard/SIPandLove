@@ -2,7 +2,7 @@
 # coding: utf-8
 
 import sys
-import asyncio
+import threading
 import time
 
 import Message
@@ -34,11 +34,17 @@ class TransactionManager:
     def send(self, message):
         transaction = ClientTransaction(message.headers, message.method)
 
-class Transaction:
+class Transaction(threading.Thread):
     def __init__(self, branch, method):
+        threading.Thread.__init__(self)
         self.branch = branch
         self.method = method
 
+        self.start()
+
+    def run(self):
+        while True:
+            
         
 class ClientTransaction(Transaction):
     def __init__(self, branch, method):
