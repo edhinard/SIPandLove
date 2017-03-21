@@ -1,0 +1,76 @@
+
+toto
+
+
+titi
+
+REGISTER sip:ims.mnc001.mcc208.3gppnetwork.org SIP/2.0
+Via: SIP/2.0/UDP 5.5.0.11:3062;branch=z9hG4bK-26657-1-0
+Max-Forwards: 20
+From: "alice" <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=1
+To: "alice" <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>
+Call-ID: reg///1-26657@5.5.0.11
+CSeq: 1 REGISTER
+Authorization: Digest username="alice@ims.mnc001.mcc208.3gppnetwork.org", realm="ims.mnc001.mcc208.3gppnetwork.org", nonce="", uri="sip:ims.mnc001.mcc208.3gppnetwork.org", response=""
+Require: sec-agree
+Proxy-Require: sec-agree
+Security-Client: ipsec-3gpp; ealg=null; alg=hmac-md5-96; spi-c=1111; spi-s=2222; port-c=5062; port-s=5064
+User-Agent: Sipp v1.1-TLS, version 20061124
+Contact: <sip:alice@172.20.147.111:6062;ob>
+Expires: 300
+Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS
+Content-Length:  0
+
+
+
+SIP/2.0 401 Unauthorized - Challenging the UE
+Via: SIP/2.0/UDP 5.5.0.11:3062;rport=3062;branch=z9hG4bK-26657-1-0
+From: "alice" <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=1
+To: "alice" <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=faeec13323cf344e1125761a979ec21b-b086
+Call-ID: reg///1-26657@5.5.0.11
+CSeq: 1 REGISTER
+Path: <sip:term@pcscf.ims.mnc001.mcc208.3gppnetwork.org:5060;lr>
+Service-Route: <sip:orig@scscf.ims.mnc001.mcc208.3gppnetwork.org:6060;lr>
+Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, SUBSCRIBE, NOTIFY, PUBLISH, MESSAGE, INFO
+Server: Sip EXpress router (2.1.0-dev1 OpenIMSCore (x86_64/linux))
+Content-Length: 0
+Warning: 392 193.252.231.243:6060 "Noisy feedback tells:  pid=7409 req_src_ip=193.252.231.243 req_src_port=4060 in_uri=sip:scscf.ims.mnc001.mcc208.3gppnetwork.org:6060 out_uri=sip:scscf.ims.mnc001.mcc208.3gppnetwork.org:6060 via_cnt==3"
+WWW-Authenticate: Digest realm="ims.mnc001.mcc208.3gppnetwork.org", nonce="Kyxn5P1xA3NJwcHWvDPNY9DiS7UidQAAay7a6qH4KoM=", algorithm=AKAv1-MD5, qop="auth,auth-int"
+Security-Server: ipsec-3gpp; ealg=null; alg=hmac-md5-96; spi-c=5086; spi-s=5087; port-c=33760; port-s=37529; prot=esp; mod=trans; q=0.1
+
+
+REGISTER sip:ims.mnc001.mcc208.3gppnetwork.org SIP/2.0
+Via: SIP/2.0/UDP 5.5.0.11:3062;branch=z9hG4bK-26657-1-2
+Max-Forwards: 70
+From: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=1
+To: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>
+Call-ID: 1-26657@5.5.0.11
+CSeq: 2 REGISTER
+User-Agent: SIPp
+Contact: <sip:alice@5.5.0.11:6061;ob>
+Expires: 300
+Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS
+Authorization: Digest username="alice@ims.mnc001.mcc208.3gppnetwork.org",realm="ims.mnc001.mcc208.3gppnetwork.org",cnonce="6b8b4567",nc=00000001,qop=auth-int,uri="sip:193.252.231.243:5060",nonce="Kyxn5P1xA3NJwcHWvDPNY9DiS7UidQAAay7a6qH4KoM=",response="af96a1f041837c837c2a1ab2f2e75f87",algorithm=AKAv1-MD5
+Content-Length:  0
+
+
+
+SIP/2.0 200 OK - SAR succesful and registrar saved
+Via: SIP/2.0/UDP 5.5.0.11:3062;rport=3062;branch=z9hG4bK-26657-1-2
+From: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=1
+To: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=faeec13323cf344e1125761a979ec21b-4595
+Call-ID: 1-26657@5.5.0.11
+CSeq: 2 REGISTER
+P-Associated-URI: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>
+Contact: <sip:alice@5.5.0.13:28335>;expires=3412;pub-gruu="sip:alice@ims.mnc001.mcc208.3gppnetwork.org;gr=urn:gsma:imei:35380106-798061-0"
+Contact: <sip:alice@5.5.0.13:25875>;expires=3437;pub-gruu="sip:alice@ims.mnc001.mcc208.3gppnetwork.org;gr=urn:gsma:imei:35380106-798061-0"
+Contact: <sip:alice@5.5.0.13:28152>;expires=3500;pub-gruu="sip:alice@ims.mnc001.mcc208.3gppnetwork.org;gr=urn:gsma:imei:35380106-798061-0"
+Contact: <sip:alice@5.5.0.11:6061;ob>;expires=300
+Path: <sip:term@pcscf.ims.mnc001.mcc208.3gppnetwork.org:5060;lr>
+Service-Route: <sip:orig@scscf.ims.mnc001.mcc208.3gppnetwork.org:6060;lr>
+Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, SUBSCRIBE, NOTIFY, PUBLISH, MESSAGE, INFO
+P-Charging-Function-Addresses: ccf=pri_ccf_address
+Server: Sip EXpress router (2.1.0-dev1 OpenIMSCore (x86_64/linux))
+Content-Length: 0
+Warning: 392 193.252.231.243:6060 "Noisy feedback tells:  pid=7411 req_src_ip=193.252.231.243 req_src_port=4060 in_uri=sip:scscf.ims.mnc001.mcc208.3gppnetwork.org:6060 out_uri=sip:scscf.ims.mnc001.mcc208.3gppnetwork.org:6060 via_cnt==3"
+

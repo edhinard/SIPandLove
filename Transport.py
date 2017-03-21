@@ -5,31 +5,39 @@ import socket
 import select
 import sys
 import multiprocessing
+import threading
 import time
 
 import Message
 
-class Transport:
+class Transport(threading.Thread):
     def __init__(self, interface, listenport=5060, tcp_only=False):
+        threading.Thread.__init__(self, daemon=True)
         self.listenhost = '172.20.35.253' # interface -> ip address
         self.listenhost = '192.168.1.18'
         self.listenport = listenport
         self.pipe,childpipe = multiprocessing.Pipe()
-        self.process = multiprocessing.Process(target=Transport.processloop, args=(self.listenhost, self.listenport, childpipe, tcp_only))
+        self.process = multiprocessing.Process(target=Transport.processloop, args=(self.listenhost, self.listenport, childpipe, tcp_only), daemon=True)
         self.process.start()
+        self.ingress = None
+        self.start()
 
     def send(self, message, addr, protocol):
         if not issubclass(message, Message.SIPMessage):
             raise TypeError('expecting SIPMessage subclass as message')
         self.pipe.send((protocol, addr, message.tobytes()))
 
-    def recv(self):
+    # Thread loop
+    def run(self):
         while True:
             protocol,addr,message = self.pipe.recv()
             message = Message.SIPMessage.frombytes(message)
-            if message:
-                return (protocol, addr, message)
-        
+            if message and self.ingress:
+                message.transport = self
+                # modify Via: with protocol and addr ?
+                self.ingress(message)
+                
+    # Process loop
     @staticmethod
     def processloop(srcip, srcport, pipe, tcp_only):
         poll = select.poll()
@@ -51,7 +59,7 @@ class Transport:
         while True:
             for fd,event in poll.poll(1000):
 
-                # Packet comming from Transaction layer --> send to remote address
+                # Packet comming from upper layer --> send to remote address
                 if fd == pipe.fileno():
                     transport,remoteaddr,packet = pipe.recv()
                     if transport == 'tcp':
@@ -63,7 +71,7 @@ class Transport:
                 elif fd == maintcp.fileno():
                     tcpsockets.addnew(*maintcp.accept())
 
-                # Incomming UDP packet --> decode and send to Transaction layer
+                # Incomming UDP packet --> decode and send to upper layer
                 elif not tcp_only and fd == udp.fileno():
                     packet,remoteaddr = udp.recvfrom(8192)
                     decodeinfo = Message.SIPMessage.predecode(packet)
@@ -87,10 +95,10 @@ class Transport:
 
                     pipe.send(('udp',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
 
-                # Incomming TCP buffer --> assemble with previous buffer, decode and send to Transaction layer
+                # Incomming TCP buffer --> assemble with previous buffer, decode and send to upper layer
                 else:
                     newbuf = tcpsockets.readfrom(fd)
-                    # Socker closed by peer
+                    # Socket closed by peer
                     if not newbuf:
                         tcpsockets.delete(fd)
                         continue
@@ -121,6 +129,8 @@ class Transport:
                             
             tcpsockets.cleanup()
 
+DEFAULT = Transport('eno1')
+            
 class ServiceSockets:
     TIMEOUT = 32.
     
@@ -172,14 +182,13 @@ class ServiceSockets:
             if currenttime - lasttime[0] > self.TIMEOUT:
                 self.delete(fd)
 
-t = Transport('x')
-while 1:
-    transport,dstaddr,message = t.pipe.recv()
-    message = Message.SIPMessage.frombytes(message)
-    print(message)
-    if isinstance(message, Message.SIPRequest):
-        t.pipe.send((transport,dstaddr,message.response(200).tobytes()))
-    else:
-        t.pipe.send((transport,dstaddr,b'OK'))
-
-            
+if __name__ == '__main__':                
+    t = Transport('x')
+    while 1:
+        transport,dstaddr,message = t.pipe.recv()
+        message = Message.SIPMessage.frombytes(message)
+        print(message)
+        if isinstance(message, Message.SIPRequest):
+            t.pipe.send((transport,dstaddr,message.response(200).tobytes()))
+        else:
+            t.pipe.send((transport,dstaddr,b'OK'))
