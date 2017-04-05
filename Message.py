@@ -3,8 +3,8 @@
 import re
 import collections
 
-import SIPBNF
-import Header
+from . import SIPBNF
+from . import Header
 
 
 CRLF = b'\r\n'
@@ -21,7 +21,7 @@ class DecodeInfo:
         self.parsingerrors = []
 
     def is_ok(self):
-        return self.istart is not None and self.iend is not None and self.iend <= len(buf)
+        return self.istart is not None and self.iend is not None and self.iend <= len(self.buf)
 
     def finish(self):
         rawheaders=self.buf[self.iheaders:self.iblank]
@@ -147,16 +147,12 @@ class SIPResponse(SIPMessage):
         
 
 class SIPRequest(SIPMessage):
-    def __new__(cls, requesturi, rawheaders=b'', body=b'', *, method=None, headers=()):
-        klass = globals().get(method)
-        if issubclass(klass, SIPRequest):
-            return SIPMessage.__new__(klass)
-        else:
-            return SIPMessage.__new__(cls)
+    def __new__(cls, requesturi, rawheaders=b'', body=b'', *, headers=()):
+        cls.method = cls.__name__
+        return SIPMessage.__new__(cls)
         
-    def __init__(self, requesturi, rawheaders=b'', body=b'', *, method=None, headers=()):
+    def __init__(self, requesturi, rawheaders=b'', body=b'', *, headers=()):
         SIPMessage.__init__(self, rawheaders=rawheaders, body=body, headers=headers)
-        self.method = method
         self.requesturi = requesturi
 
     def startline(self):
@@ -204,3 +200,13 @@ if __name__ == '__main__':
             print()
 
         
+    message = Message.REGISTER('sip:osk.nokims.eu',
+                               (('to','sip:+33900821220@osk.nokims.eu'),
+                                ('from','<sip:+33900821220@osk.nokims.eu>;tag=y258e1J10wLB'),
+                                ('Contact','<sip:+33900821220@172.20.35.253:6060;ob>')
+                               ))
+
+
+    message = Message.REGISTER('sip:osk.nokims.eu',
+rawheaders=b"""Authorization: Digest username="+33900821220@osk.nokims.eu", realm="osk.nokims.eu", nonce="", uri="sip:osk.nokims.eu", response=""
+Expires: 300""")

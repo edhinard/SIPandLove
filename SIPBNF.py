@@ -1,6 +1,7 @@
 #coding: utf-8
 
 import collections
+import re
 
 import pyparsing as pp
 
@@ -58,8 +59,8 @@ reserved =  ';/?:@&=+$,'
 #      LWS  =  [*WSP CRLF] 1*WSP ; linear whitespace
 #      SWS  =  [LWS] ; sep whitespace
 WSP = pp.Word(' \t')
-LWS = WSP.setName('LWS')
-SWS = pp.Optional(WSP).setName('SWS')
+LWS = WSP
+SWS = pp.Optional(WSP)
 
 
 #   To separate the header name from the rest of value, a colon is used,
@@ -122,6 +123,86 @@ LHEX = '0123456789abcdef'
 token = pp.Word(pp.alphanums + '-.!%*_+`\'~', min=1)
 word  = pp.Word(pp.alphanums + '-.!%*_+`\'~()<>:\\"/[]?{}', min=1)
 
+
+class ParameterDict:
+    """Dictionary, that has ordered case-insensitive keys.
+
+    from http://code.activestate.com/recipes/66315-case-insensitive-dictionary/
+    + change dict to OrderedDict
+    
+    Keys are retained in their original form
+    when queried with .keys() or .items().
+
+    Implementation: An internal dictionary maps lowercase
+    keys to (key,value) pairs. All key lookups are done
+    against the lowercase keys, but all methods that expose
+    keys to the user retrieve the original keys."""
+    
+    def __init__(self, dict=None):
+        """Create an empty dictionary, or update from 'dict'."""
+        self._dict = collections.OrderedDict()
+        if dict:
+            self.update(dict)
+
+    def __getitem__(self, key):
+        """Retrieve the value associated with 'key' (in any case)."""
+        k = key.lower()
+        return self._dict[k][1]
+
+    def __setitem__(self, key, value):
+        """Associate 'value' with 'key'. If 'key' already exists, but
+        in different case, it will be replaced."""
+        k = key.lower()
+        self._dict[k] = (key, value)
+
+    def has_key(self, key):
+        """Case insensitive test wether 'key' exists."""
+        k = key.lower()
+        return self._dict.has_key(k)
+
+    def keys(self):
+        """List of keys in their original case."""
+        return [v[0] for v in self._dict.values()]
+
+    def values(self):
+        """List of values."""
+        return [v[1] for v in self._dict.values()]
+
+    def items(self):
+        """List of (key,value) pairs."""
+        return self._dict.values()
+
+    def get(self, key, default=None):
+        """Retrieve value associated with 'key' or return default value
+        if 'key' doesn't exist."""
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def setdefault(self, key, default):
+        """If 'key' doesn't exists, associate it with the 'default' value.
+        Return value associated with 'key'."""
+        if not self.has_key(key):
+            self[key] = default
+        return self[key]
+
+    def update(self, dict):
+        """Copy (key,value) pairs from 'dict'."""
+        for k,v in dict.items():
+            self[k] = v
+
+    def __repr__(self):
+        """String representation of the dictionary."""
+        items = ", ".join([("%r: %r" % (k,v)) for k,v in self.items()])
+        return "{%s}" % items
+
+    def __str__(self):
+        """String representation of the dictionary."""
+        return repr(self)
+
+
+
 #   When tokens are used or separators are used between elements,
 #   whitespace is often allowed before or after these characters:
 #
@@ -137,16 +218,17 @@ word  = pp.Word(pp.alphanums + '-.!%*_+`\'~()<>:\\"/[]?{}', min=1)
 #      COLON   =  SWS ":" SWS ; colon
 #      LDQUOT  =  SWS DQUOTE; open double quotation mark
 #      RDQUOT  =  DQUOTE SWS ; close double quotation mark
-SLASH = (pp.Suppress(SWS) + pp.Literal('/') + pp.Suppress(SWS)).setName('SLASH')
-EQUAL = (pp.Suppress(SWS) + pp.Literal('=') + pp.Suppress(SWS)).setName('EQUAL')
+STAR = (pp.Suppress(SWS) + pp.Literal('*') + pp.Suppress(SWS))
+SLASH = (pp.Suppress(SWS) + pp.Literal('/') + pp.Suppress(SWS))
+EQUAL = (pp.Suppress(SWS) + pp.Literal('=') + pp.Suppress(SWS))
 
 
 RAQUOT = pp.Literal(">") + pp.Suppress(SWS)
 LAQUOT = pp.Suppress(SWS) + pp.Literal("<")
-COMMA = pp.Suppress(SWS + pp.Literal(',') + SWS).setName('COMMA')
-SEMI = pp.Suppress(SWS + pp.Literal(';') + SWS).setName('SEMI')
-COLON = (pp.Suppress(SWS) + pp.Literal(':') + pp.Suppress(SWS)).setName('COLON')
-DQUOTE = pp.Literal('"').setName('DQUOTE')
+COMMA = pp.Suppress(SWS + pp.Literal(',') + SWS)
+SEMI = pp.Suppress(SWS + pp.Literal(';') + SWS)
+COLON = (pp.Suppress(SWS) + pp.Literal(':') + pp.Suppress(SWS))
+DQUOTE = pp.Literal('"')
 LDQUOT = SWS + DQUOTE
 RDQUOT = DQUOTE + SWS
 
@@ -176,15 +258,29 @@ RDQUOT = DQUOTE + SWS
 #
 #quoted-pair  =  "\" (%x00-09 / %x0B-0C
 #                / %x0E-7F)
-qdtext = pp.Word(pp.srange('[\x20-\x7e]'), excludeChars='\x22\x5c')
-qdtext = pp.Word(pp.printables+' \t', excludeChars='"\\')
-qdtext = pp.Word(pp.srange('[\x20-\xff]'), excludeChars='\x22\x5c')
-qdtext = pp.Word(pp.srange(r'[\x20-\xff]'), excludeChars='"\\')
-#qdtext = pp.Word(pp.printables+' \t', excludeChars='"\\')
-#qdtext = pp.Regex('[^"]*')
-quoted_pair = pp.Literal('\\') + pp.Word(pp.srange('[\x00-\x7f]'), excludeChars='\x0a\x0d', min=1, max=1)
-quoted_string = pp.Combine(pp.Suppress(SWS) + DQUOTE + pp.ZeroOrMore(qdtext ^ quoted_pair) + DQUOTE).setName('quoted-string')
-      
+quoted_string = pp.Suppress(SWS) + pp.quotedString
+ESCAPE_RE=re.compile('\\\\[\r\n]')
+def unquote(string):
+    if not (string.startswith('"') and string.endswith('"')):
+        return string
+    string = string[1:-1].replace('\\\\', '\\').replace('\\"', '"')
+    if string and (string[-1] == '\\' or ESCAPE_RE.match(string)):
+        raise Exception("Unexpected backslash in quoted-string")
+    return string
+NONTOKENCHARS_RE=re.compile('[] \t"#$&(),/:;<=>?@[\\^{|}]')
+def quote(string,forcequote=False):
+    if string is None:
+        return None
+    quotealreadythere = False
+    if string.startswith('"') and string.endswith('"'):
+        quotealreadythere = True
+        string = string[1:-1]
+    if quotealreadythere or \
+       forcequote or \
+       NONTOKENCHARS_RE.match(string) or \
+       string!=string.encode('ascii','ignore').decode('ascii'):
+        return '"{}"'.format(string.replace('\\', '\\\\').replace('"', '\\"'))
+    return string
 
 #SIP-URI          =  "sip:" [ userinfo ] hostport
 #                    uri-parameters [ headers ]
@@ -315,8 +411,11 @@ absoluteURI = scheme + pp.Suppress(pp.Literal(':')) + (hier_part ^ opaque_part)
 Request_URI = SIP_URI ^ SIPS_URI ^ absoluteURI
 
 class URI:
-    def __init__(self, value):
-        res = Parser(Request_URI).parse(value)
+    def __init__(self, valueorparseresult):
+        if isinstance(valueorparseresult, str):
+            res = Parser(Request_URI).parse(valueorparseresult)
+        else:
+            res = valueorparseresult
         self.scheme = res.pop(0)
         if self.scheme.startswith('sip'):
             # SIP or SIPS URI
@@ -331,7 +430,7 @@ class URI:
                 self.port = None
             else:
                 self.port = int(port)
-            self.parameters = collections.OrderedDict()
+            self.params = ParameterDict()
             while res and res[0] == ';':
                 res.pop(0)
                 k = res.pop(0)
@@ -340,8 +439,8 @@ class URI:
                     v = res.pop(0)
                 else:
                     v = None
-                self.parameters[k] = v
-            self.headers = collections.OrderedDict()
+                self.params[k] = v
+            self.headers = ParameterDict()
             if res:
                 res.pop(0) # it should be a '?'
             while res:
@@ -367,9 +466,9 @@ class URI:
                 hostport = self.host
             else:
                 hostport = '{}:{}'.format(self.host, self.port)
-            parameters = (';{}{}'.format(k, ('={}'.format(v) if v is not None else '') or '') for k,v in self.parameters.items())
+            params = (';{}{}'.format(k, ('={}'.format(v) if v is not None else '') or '') for k,v in self.params.items())
             headers = ('{}={}'.format(k, v) for k,v in self.headers.items())
-            return "{}:{}{}{}{}".format(self.scheme, self.userinfo, hostport, ''.join(parameters), '&'.join(headers) or '')
+            return "{}:{}{}{}{}".format(self.scheme, self.userinfo, hostport, ''.join(params), '&'.join(headers) or '')
         else:
             return "{}:{}{}".format(self.scheme, self.uri, "?{}".format(self.query) if self.query is not None else '')
 
@@ -519,15 +618,18 @@ Method = pp.Literal('INVITE') ^ pp.Literal('ACK') ^ pp.Literal('OPTIONS') ^ pp.L
 #                  / ( "1" [ "." 0*3("0") ] )
 #generic-param  =  token [ EQUAL gen-value ]
 #gen-value      =  token / host / quoted-string
+qvalue = pp.Combine((pp.Literal('0') + pp.Optional(pp.Literal('.') +  pp.Optional(pp.Word(pp.nums, max=3)))) ^ (pp.Literal('1') + pp.Optional(pp.Literal('.') +  pp.Optional(pp.Word('0', max=3)))))
 gen_value = token ^ host ^ quoted_string
 generic_param = token + pp.Optional(EQUAL + gen_value)
+
 
 #Accept-Encoding  =  "Accept-Encoding" HCOLON
 #                     [ encoding *(COMMA encoding) ]
 #encoding         =  codings *(SEMI accept-param)
 #codings          =  content-coding / "*"
 #content-coding   =  token
-#
+
+
 #Accept-Language  =  "Accept-Language" HCOLON
 #                     [ language *(COMMA language) ]
 #language         =  language-range *(SEMI accept-param)
@@ -535,7 +637,8 @@ generic_param = token + pp.Optional(EQUAL + gen_value)
 #
 #Alert-Info   =  "Alert-Info" HCOLON alert-param *(COMMA alert-param)
 #alert-param  =  LAQUOT absoluteURI RAQUOT *( SEMI generic-param )
-#
+
+
 #Allow  =  "Allow" HCOLON [Method *(COMMA Method)]
 
 
@@ -564,36 +667,46 @@ generic_param = token + pp.Optional(EQUAL + gen_value)
 #auth-param-name   =  token
 #other-response    =  auth-scheme LWS auth-param
 #                     *(COMMA auth-param)
-#auth-scheme       =  token
-auth_param_name = token
-auth_param = auth_param_name + EQUAL + (token ^ quoted_string)
-auth_scheme = token
-other_response = auth_scheme + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(COMMA + auth_param)
-digest_uri_value = Request_URI('uri')
-digest_uri = pp.CaselessLiteral('uri') + EQUAL + pp.Combine(LDQUOT + digest_uri_value + LDQUOT)
-request_digest = pp.Combine(LDQUOT + pp.Optional(pp.Word(LHEX, exact=32)) + RDQUOT)
-dresponse =  pp.CaselessLiteral('response') + EQUAL + request_digest('response').setName('request-digest')
-nonce =  pp.CaselessLiteral('nonce') + EQUAL + quoted_string('nonce')
-realm =  pp.CaselessLiteral('realm') + EQUAL + quoted_string('realm')
-username = pp.CaselessLiteral('username') + EQUAL + quoted_string('username')
-dig_resp = username ^ realm ^ nonce ^ dresponse ^ digest_uri
-digest_response = dig_resp + pp.ZeroOrMore(COMMA + dig_resp)
-credentials = ((pp.CaselessLiteral('Digest') + pp.Suppress(LWS) + digest_response) ^ other_response)
-
-Authorization = Parser(credentials)
+auth_param = token + pp.Suppress(EQUAL) + (token ^ quoted_string)
+Authorization = Parser(token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
 def AuthorizationParse(headervalue):
     res = Authorization.parse(headervalue)
     scheme = res.pop(0)
-    params = {}
+    params = ParameterDict()
     while res:
         k = res.pop(0)
-        if res:
-            res.pop(0)
-            params[k] = res.pop(0)
-    return {'auth-scheme':scheme, 'params':params}
+        v = res.pop(0).strip()
+        if scheme.lower()=='digest':
+            if k.lower() in ('username', 'realm', 'nonce', 'uri', 'response', 'cnonce', 'opaque'):
+                if not (v.startswith('"') and v.endswith('"')):
+                    raise Exception("quotes expected around {} value".format(k))
+                if k.lower() == 'uri':
+                    v = URI(v[1:-1])
+                elif k.lower() == 'response':
+                    v = v[1:-1]
+                    if v: # Empty response are often seen but should not. BNF says: 32LHEX
+                        try:
+                            v = pp.Word(LHEX, exact=32).parseString(v)[0]
+                        except:
+                            raise Exception("32 lowercase hexa digits expected in response")
+                else:
+                    v = unquote(v)
+            elif k.lower() in ('algorithm', 'qop', 'nc'):
+                if v.startswith('"') or v.endswith('"'):
+                    raise Exception("unexpected quotes around {} value".format(k))
+                if k.lower() == 'nc':
+                    v = pp.Word(LHEX, exact=8).parseString(v)[0]
+        else:
+            v = unquote(v)
+        params[k] = v
+    return dict(scheme=scheme, params=params)
+def AuthorizationDisplay(authorization):
+    if authorization.scheme.lower() == 'digest':
+        params = ("{}={}".format(k,quote(str(v),True) if k.lower() not in ('algorithm','nc','qop') else v) for k,v in authorization.params.items())
+    else:
+        params = ("{}={}".format(k,quote(v)) for k,v in authorization.params.items())
+    return "{} {}".format(authorization.scheme, ','.join(params))
 
-
-#
 #Authentication-Info  =  "Authentication-Info" HCOLON ainfo
 #                        *(COMMA ainfo)
 #ainfo                =  nextnonce / message-qop
@@ -602,22 +715,27 @@ def AuthorizationParse(headervalue):
 #nextnonce            =  "nextnonce" EQUAL nonce-value
 #response-auth        =  "rspauth" EQUAL response-digest
 #response-digest      =  LDQUOT *LHEX RDQUOT
-#
+
+
 #Call-ID  =  ( "Call-ID" / "i" ) HCOLON callid
 #callid   =  word [ "@" word ]
-callid = word + pp.Optional(pp.Literal('@') + word)
+callid = pp.Combine(word + pp.Optional(pp.Literal('@') + word))
 Call_ID = Parser(callid)
+Call_IDAlias = 'i'
 def Call_IDParse(headervalue):
     res = Call_ID.parse(headervalue)
     callid = res.pop(0)
-    return {'callid':callid}
+    return dict(callid=callid)
+def Call_IDDisplay(ci):
+    return str(ci.callid)
 
 
 #Call-Info   =  "Call-Info" HCOLON info *(COMMA info)
 #info        =  LAQUOT absoluteURI RAQUOT *( SEMI info-param)
 #info-param  =  ( "purpose" EQUAL ( "icon" / "info"
 #               / "card" / token ) ) / generic-param
-#
+
+
 #Contact        =  ("Contact" / "m" ) HCOLON
 #                  ( STAR / (contact-param *(COMMA contact-param)))
 #contact-param  =  (name-addr / addr-spec) *(SEMI contact-params)
@@ -631,9 +749,51 @@ def Call_IDParse(headervalue):
 #c-p-expires        =  "expires" EQUAL delta-seconds
 #contact-extension  =  generic-param
 #delta-seconds      =  1*DIGIT
-addr_spec = SIP_URI ^ SIPS_URI ^ absoluteURI
-display_name = pp.Combine(pp.ZeroOrMore(token + LWS)) ^ quoted_string
-name_addr = pp.Optional(display_name) + pp.Combine(LAQUOT + addr_spec + RAQUOT)
+addr_spec = pp.Group(SIP_URI ^ SIPS_URI ^ absoluteURI)
+tokenLWS = pp.Word(pp.alphanums + '-.!%*_+`\'~ \t')
+display_name = pp.Combine(tokenLWS) ^ quoted_string
+name_addr = pp.Optional(display_name, '') + pp.Suppress(LAQUOT) + addr_spec + pp.Suppress(RAQUOT)
+c_p_q = pp.CaselessLiteral('q') + EQUAL + qvalue
+delta_seconds =  pp.Word(pp.nums, min=1)
+c_p_expires = pp.CaselessLiteral('expires') + EQUAL + delta_seconds
+contact_params = c_p_q ^ c_p_expires  ^ generic_param
+contact_param = pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Suppress(SEMI) + contact_params))
+
+Contact = Parser(STAR ^ (pp.Group(contact_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + contact_param))))
+ContactParseAlias = 'm'
+def ContactParse(headervalue):
+    res = Contact.parse(headervalue)
+    if res[0] == '*':
+        yield dict(display=None, address='*', params={})
+        return
+    for addr,par in res:
+        if len(addr) == 2:
+            disp = unquote(addr.pop(0))
+        else:
+            disp = None
+        addr = URI(addr.pop(0))
+        params = {}
+        while par:
+            k = par.pop(0)
+            if par and par[0] == '=':
+                par.pop(0)
+                v = unquote(par.pop(0))
+                params[k] = v
+            else:
+                params[k] = None
+        yield dict(display=disp, address=addr, params=params)
+def ContactDisplay(contact):
+    if contact.address == '*':
+        return "*"
+    if contact.display:
+        addr = "{} <{}>".format(quote(contact.display), contact.address)
+    elif contact.params or contact.address.params:
+        addr = "<{}>".format(contact.address)
+    else:
+        addr = str(contact.address)
+    params = (";{}{}".format(k, "={}".format(quote(v)) if v is not None else "") for k,v in contact.params.items())
+    return "{}{}".format(addr, ''.join(params))
+
 
 #Content-Disposition   =  "Content-Disposition" HCOLON
 #                         disp-type *( SEMI disp-param )
@@ -645,7 +805,8 @@ name_addr = pp.Optional(display_name) + pp.Combine(LAQUOT + addr_spec + RAQUOT)
 #                         / other-handling )
 #other-handling        =  token
 #disp-extension-token  =  token
-#
+
+
 #Content-Encoding  =  ( "Content-Encoding" / "e" ) HCOLON
 #                     content-coding *(COMMA content-coding)
 #
@@ -654,14 +815,16 @@ name_addr = pp.Optional(display_name) + pp.Combine(LAQUOT + addr_spec + RAQUOT)
 #language-tag      =  primary-tag *( "-" subtag )
 #primary-tag       =  1*8ALPHA
 #subtag            =  1*8ALPHA
-#
+
+
 #Content-Length  =  ( "Content-Length" / "l" ) HCOLON 1*DIGIT
 Content_Length = Parser(pp.Word(pp.nums))
 Content_LengthAlias = 'l'
 def Content_LengthParse(headervalue):
     return dict(length=int(Content_Length.parse(headervalue)[0]))
 def Content_LengthDisplay(cl):
-    return "{}".format(cl.length)
+    return str(cl.length)
+
 
 #Content-Type     =  ( "Content-Type" / "c" ) HCOLON media-type
 #media-type       =  m-type SLASH m-subtype *(SEMI m-parameter)
@@ -677,7 +840,26 @@ def Content_LengthDisplay(cl):
 #m-parameter      =  m-attribute EQUAL m-value
 #m-attribute      =  token
 #m-value          =  token / quoted-string
-#
+m_parameter = token + pp.Suppress(EQUAL) + (token ^ quoted_string)
+m_subtype = token
+m_type = token
+Content_Type = Parser(m_type + pp.Suppress(SLASH) + m_subtype + pp.ZeroOrMore(pp.Suppress(SEMI) + m_parameter))
+Content_TypeAlias = 'c'
+def Content_TypeParse(headervalue):
+    res = Content_Type.parse(headervalue)
+    type = res.pop(0)
+    subtype = res.pop(0)
+    params = {}
+    while res:
+        k = res.pop(0)
+        v = unquote(res.pop(0))
+        params[k] = v
+    return dict(type=type, subtype=subtype, params=params)
+def Content_TypeDisplay(ct):
+    params = (";{}={}".format(k, quote(v)) for k,v in ct.params.items())
+    return "{}/{}{}".format(ct.type, ct.subtype, ''.join(params))
+
+
 #CSeq  =  "CSeq" HCOLON 1*DIGIT LWS Method
 CSeq = Parser(pp.Word(pp.nums) + pp.Suppress(LWS) + Method)
 def CSeqParse(headervalue):
@@ -685,6 +867,8 @@ def CSeqParse(headervalue):
     seq = int(res.pop(0))
     method = res.pop(0)
     return dict(seq=seq, method=method)
+def CSeqDisplay(cseq):
+    return "{} {}".format(cseq.seq, cseq.method)
 
 #Date          =  "Date" HCOLON SIP-date
 #SIP-date      =  rfc1123-date
@@ -703,27 +887,66 @@ def CSeqParse(headervalue):
 #error-uri   =  LAQUOT absoluteURI RAQUOT *( SEMI generic-param )
 #
 #Expires     =  "Expires" HCOLON delta-seconds
+Expires = Parser(delta_seconds)
+def ExpiresParse(headervalue):
+    return dict(delta=int(Expires.parse(headervalue)[0]))
+def ExpiresDisplay(e):
+    return str(e.delta)
+
 #From        =  ( "From" / "f" ) HCOLON from-spec
 #from-spec   =  ( name-addr / addr-spec )
 #               *( SEMI from-param )
 #from-param  =  tag-param / generic-param
 #tag-param   =  "tag" EQUAL token
-#
+tag_param = pp.CaselessLiteral('tag') + EQUAL + token
+from_param = tag_param ^ generic_param
+From = Parser(pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Suppress(SEMI) + from_param)))
+FromParseAlias = 'f'
+def FromParse(headervalue):
+    addr,par = From.parse(headervalue)
+    if len(addr) == 2:
+        disp = unquote(addr.pop(0))
+    else:
+        disp = None
+    addr = URI(addr.pop(0))
+    params = {}
+    while par:
+        k = par.pop(0)
+        if par and par[0] == '=':
+            par.pop(0)
+            v = unquote(par.pop(0))
+            params[k] = v
+        else:
+            params[k] = None
+    return dict(display=disp, address=addr, params=params)
+FromDisplay = ContactDisplay
+
+
 #In-Reply-To  =  "In-Reply-To" HCOLON callid *(COMMA callid)
 #
 #Max-Forwards  =  "Max-Forwards" HCOLON 1*DIGIT
-#
+Max_Forwards = Parser(pp.Word(pp.nums))
+def Max_ForwardsParse(headervalue):
+    return dict(max=int(Max_Forwards.parse(headervalue)[0]))
+def Max_ForwardsDisplay(mf):
+    return str(mf.max)
+
+
 #MIME-Version  =  "MIME-Version" HCOLON 1*DIGIT "." 1*DIGIT
-#
+
+
 #Min-Expires  =  "Min-Expires" HCOLON delta-seconds
-#
+
+
 #Organization  =  "Organization" HCOLON [TEXT-UTF8-TRIM]
-#
+
+
 #Priority        =  "Priority" HCOLON priority-value
 #priority-value  =  "emergency" / "urgent" / "normal"
 #                   / "non-urgent" / other-priority
 #other-priority  =  token
-#
+
+
 #Proxy-Authenticate  =  "Proxy-Authenticate" HCOLON challenge
 #challenge           =  ("Digest" LWS digest-cln *(COMMA digest-cln))
 #                       / other-challenge
@@ -746,9 +969,43 @@ def CSeqParse(headervalue):
 #qop-options         =  "qop" EQUAL LDQUOT qop-value
 #                       *("," qop-value) RDQUOT
 #qop-value           =  "auth" / "auth-int" / token
+Proxy_Authenticate = Parser(token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
+
+def Proxy_AuthenticateParse(headervalue):
+    res = Proxy_Authenticate.parse(headervalue)
+    scheme = res.pop(0)
+    params = ParameterDict()
+    while res:
+        k = res.pop(0)
+        v = res.pop(0).strip()
+        if scheme.lower()=='digest':
+            if k.lower() in ('realm', 'domain', 'nonce', 'opaque', 'qop'):
+                if not (v.startswith('"') and v.endswith('"')):
+                    raise Exception("quotes expected around {} value".format(k))
+                if k.lower() == 'domain':
+                    v = URI(v[1:-1]) # TODO - should be a whitespace separated list of URI 
+                else:
+                    v = unquote(v)
+            elif k.lower() in ('algorithm', 'stale'):
+                if k.lower() == 'stale':
+                    if v.lower() not in ('true', 'false'):
+                        raise Exception("stale value should be 'true' or 'false'")
+        else:
+            v = unquote(v)
+        params[k] = v
+    return dict(scheme=scheme, params=params)
+def Proxy_AuthenticateDisplay(authenticate):
+    if authenticate.scheme.lower() == 'digest':
+        params = ("{}={}".format(k,quote(str(v),True) if k.lower() not in ('algorithm','stale') else v) for k,v in authenticate.params.items())
+    else:
+        params = ("{}={}".format(k,quote(v)) for k,v in authenticate.params.items())
+    return "{} {}".format(authenticate.scheme, ','.join(params))
+
 
 #Proxy-Authorization  =  "Proxy-Authorization" HCOLON credentials
-Proxy_Authorization = credentials
+Proxy_AuthorizationParse = AuthorizationParse
+Proxy_AuthorizationDisplay = AuthorizationDisplay
+
 
 #Proxy-Require  =  "Proxy-Require" HCOLON option-tag
 #                  *(COMMA option-tag)
@@ -773,13 +1030,13 @@ Proxy_Authorization = credentials
 #Route        =  "Route" HCOLON route-param *(COMMA route-param)
 #route-param  =  name-addr *( SEMI rr-param )
 rr_param = generic_param
-route_param = name_addr + pp.ZeroOrMore(SEMI + rr_param)
+route_param = name_addr + pp.ZeroOrMore(pp.Suppress(SEMI) + rr_param)
 
-Route = Parser(pp.Group(route_param) + pp.ZeroOrMore(pp.Group(COMMA + route_param)))
+Route = Parser(pp.Group(route_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + route_param)))
 def RouteParse(headervalue):
     for res in Route.parse(headervalue):
         disp = res.pop(0)
-        addr = res.pop(0)
+        addr = URI(res.pop(0))
         params = {}
         while res:
             k = res.pop(0)
@@ -788,28 +1045,36 @@ def RouteParse(headervalue):
                 params[k] = res.pop(0)
             else:
                 params[k] = None
-        yield {'display-name':disp, 'addr-spec':addr, 'params':params}
+        yield dict(display=disp, address=addr, params=params)
+RouteDisplay = ContactDisplay
 
 
-    
 #Server           =  "Server" HCOLON server-val *(LWS server-val)
 #server-val       =  product / comment
 #product          =  token [SLASH product-version]
 #product-version  =  token
-#
+
+
 #Subject  =  ( "Subject" / "s" ) HCOLON [TEXT-UTF8-TRIM]
-#
+
+
 #Supported  =  ( "Supported" / "k" ) HCOLON
 #              [option-tag *(COMMA option-tag)]
-#
+
+
 #Timestamp  =  "Timestamp" HCOLON 1*(DIGIT)
 #               [ "." *(DIGIT) ] [ LWS delay ]
 #delay      =  *(DIGIT) [ "." *(DIGIT) ]
-#
+
+
 #To        =  ( "To" / "t" ) HCOLON ( name-addr
 #             / addr-spec ) *( SEMI to-param )
 #to-param  =  tag-param / generic-param
-#
+ToParseAlias = 't'
+ToParse = FromParse
+ToDisplay = FromDisplay
+
+
 #Unsupported  =  "Unsupported" HCOLON option-tag *(COMMA option-tag)
 #User-Agent  =  "User-Agent" HCOLON server-val *(LWS server-val)
 
@@ -873,9 +1138,13 @@ def ViaDisplay(via):
 #                  ;  the Warning header, for use in debugging
 #warn-text      =  quoted-string
 #pseudonym      =  token
-#
+
+
 #WWW-Authenticate  =  "WWW-Authenticate" HCOLON challenge
-#
+WWW_AuthenticateParse = Proxy_AuthenticateParse
+WWW_AuthenticateDisplay = Proxy_AuthenticateDisplay
+
+
 #extension-header  =  header-name HCOLON header-value
 #header-name       =  token
 #header-value      =  *(TEXT-UTF8char / UTF8-CONT / LWS)
