@@ -2,7 +2,7 @@
 
 import pyparsing as pp
 
-from Utils import quote,unquote,ParameterDict
+from .Utils import quote,unquote,ParameterDict
 
 class ParseException(Exception):
     def __init__(self, msg, pos):

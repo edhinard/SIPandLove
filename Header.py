@@ -3,7 +3,7 @@
 import re
 import copy
 
-import SIPBNF
+from . import SIPBNF
 
 
 class HeaderError(Exception):

@@ -8,8 +8,8 @@ import copy
 import random
 import string
 
-import SIPBNF
-import Header
+from . import SIPBNF
+from . import Header
 
 
 CRLF = b'\r\n'
