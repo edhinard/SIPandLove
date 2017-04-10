@@ -183,6 +183,8 @@ class SIPRequest(SIPMessage):
         for authenticate in response.getheaders('WWW-Authenticate', 'Proxy-Authenticate'):
             if authenticate.scheme.lower() == 'digest':
                 params = dict(realm = authenticate.params.get('realm'),
+                              uri = str(self.uri),
+                              username = kwargs.pop('username'),
                               nonce = authenticate.params.get('nonce'),
                               algorithm = authenticate.params.get('algorithm'),
                               cnonce = ''.join((random.choice(string.ascii_letters) for _ in range(20))),
@@ -195,7 +197,7 @@ class SIPRequest(SIPMessage):
                     auth=Header.Proxy_Authorization(scheme=authenticate.scheme, params=params)
                 self.addheaders(auth)
 
-    def digest(self, *, realm, nonce, algorithm, cnonce, qop, nc, username, password):
+    def digest(self, *, realm, uri, nonce, algorithm, cnonce, qop, nc, username, password):
         algorithm = algorithm.lower() if algorithm else None
         if algorithm is not None:
             if algorithm not in ('md5', 'md5-sess'):
@@ -212,9 +214,9 @@ class SIPRequest(SIPMessage):
             ha1 = self.md5hash(ha1, nonce, cnonce)
             
         if not qop or qop == 'auth':
-            ha2 = self.md5hash(self.method, str(self.uri))
+            ha2 = self.md5hash(self.method, uri)
         else:
-            ha2 = self.md5hash(self.method, str(self.uri), md5hash(self.body))
+            ha2 = self.md5hash(self.method, uri, md5hash(self.body))
 
         if not qop:
             response = self.md5hash(ha1, nonce, ha2)
@@ -259,3 +261,4 @@ if __name__ == '__main__':
                     password='nsnims2008')
     print(resp)
     assert resp == 'afc145874b3545922d46de9ecf55ed8e'
+

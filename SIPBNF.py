@@ -597,7 +597,7 @@ def AuthorizationParse(headervalue):
                 if v.startswith('"') or v.endswith('"'):
                     raise Exception("unexpected quotes around {} value".format(k))
                 if k.lower() == 'nc':
-                    v = pp.Word(LHEX, exact=8).parseString(v)[0]
+                    v = int(pp.Word(LHEX, exact=8).parseString(v)[0], 16)
         else:
             v = unquote(v)
         params[k] = v
