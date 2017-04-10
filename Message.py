@@ -1,10 +1,12 @@
 # coding: utf-8
 
 import re
-import collections
+import base64
+import hashlib
+import logging
 
-from . import SIPBNF
-from . import Header
+import SIPBNF
+import Header
 
 
 CRLF = b'\r\n'
@@ -29,9 +31,9 @@ class DecodeInfo:
         if isinstance(self.buf, bytearray):
             del self.buf[:self.iend]
         if self.klass == SIPResponse:
-            return SIPResponse(code=self.code, reason=self.reason, rawheaders=rawheaders, body=body)
+            return SIPResponse(self.code, rawheaders, reason=self.reason, body=body)
         elif self.klass == SIPRequest:
-            return SIPRequest(method=self.method, requesturi=self.requesturi, rawheaders=rawheaders, body=body)
+            return SIPRequest(self.method, self.requesturi, rawheaders, body=body)
 
 class SIPMessage(object):
     @staticmethod
@@ -76,7 +78,7 @@ class SIPMessage(object):
             except:
                 decodeinfo.parsingerrors.append("ASCII encoding error in Request-URI: {!r}".format(requesturi))
                 return decodeinfo
-            decodeinfo.requesturi = SIPBNF.URI(requesturi)
+            decodeinfo.requesturi = requesturi
             decodeinfo.istart = r_start
             decodeinfo.iheaders =  requestline.end()
             decodeinfo.klass = SIPRequest
@@ -102,11 +104,66 @@ class SIPMessage(object):
 
         return decodeinfo
 
-    def __init__(self, *, rawheaders=b'', body=b'', headers=[]):
-        self.body = body
-        self.headers = Header.Headers(rawheaders)
-        self.headers.extend(headers)
+    
+    def __init__(self, headers, kwheaders, body):
+        if body is None:
+            self.body = b''
+        elif isinstance(body, str):
+            self.body = body.encode('utf8')
+        elif isinstance(body, bytes):
+            self.body = body
+        else:
+            raise TypeError("body should be of type str or bytes")
+        self.headers = Header.Headers(headers)
 
+    def addauthorization(self, response, **kwargs):
+        for authenticate in response.headers['WWW-Authenticate'] + response.headers['Proxy-Authenticate']:
+            if authenticate.scheme.lower() == 'digest':
+                params = dict(realm = response.params.get('realm'),
+                              nonce = response.params.get('nonce'),
+                              algorithm = response.params.get('algorithm'),
+                              cnonce = response.params.get('cnonce'),
+                              qop = response.params.get('qop'),
+                              cnonce = response.params.get('cnonce'))
+                resp = digest(self.method, self.uri, self.body, **params, **kwargs)
+                if response.name == 'WWW-Authenticate':
+                    name = 'Authorization'
+                else:
+                    name = 'Proxy-Authorization'
+                response.addheader(name, scheme=authenticate.scheme, params=params)
+
+                
+    def digest(method, uri, body, realm, nonce, algorithm, cnonce, qop, nc, username, password):
+        algorithm = algorithm.lower() if algorithm else None
+        if algorithm is not None:
+            if algorithm not in ('md5', 'md5-sess'):
+                pass
+            if cnonce is None:
+                pass
+        qop = qop.lower() if qop else None
+        if qop and qop not in ('auth', 'auth-int'):
+            pass
+        
+        ha1 = md5hash(username, realm, password)
+        if algorithm == 'md5-sess':
+            ha1 = md5hash(ha1, nonce, cnonce)
+            
+        if not qop or qop == 'auth':
+            ha2 = md5hash(method, uri)
+        else:
+            ha2 = md5hash(method, uri, md5hash(body))
+
+        if not qop:
+            response = md5hash(ha1, nonce, ha2)
+        else:
+            response = md5hash(ha1, nonce, nc, cnonce, qop, ha2)
+
+    def md5hash(*params):
+        s = b':'.join(params)
+        return hashlib.md5(s).hexdigest()
+            
+        
+    
     def tobytes(self, headerform='nominal'):
         ret = [self.startline(), b'\r\n']
         cl = Header.Content_Length(length=len(self.body))
@@ -127,14 +184,11 @@ class SIPMessage(object):
 
 class SIPResponse(SIPMessage):
     defaultreasons = {100:'Trying', 180:'Ringing', 181:'Call is Being Forwarded', 182:'Queued', 183:'Session in Progress', 199:'Early Dialog Terminated', 200:'OK', 202:'Accepted', 204:'No Notification', 300:'Multiple Choices', 301:'Moved Permanently', 302:'Moved Temporarily', 305:'Use Proxy', 380:'Alternative Service', 400:'Bad Request', 401:'Unauthorized', 402:'Payment Required', 403:'Forbidden', 404:'Not Found', 405:'Method Not Allowed', 406:'Not Acceptable', 407:'Proxy Authentication Required', 408:'Request Timeout', 409:'Conflict', 410:'Gone', 411:'Length Required', 412:'Conditional Request Failed', 413:'Request Entity Too Large', 414:'Request-URI Too Long', 415:'Unsupported Media Type', 416:'Unsupported URI Scheme', 417:'Unknown Resource-Priority', 420:'Bad Extension', 421:'Extension Required', 422:'Session Interval Too Small', 423:'Interval Too Brief', 424:'Bad Location Information', 428:'Use Identity Header', 429:'Provide Referrer Identity', 430:'Flow Failed', 433:'Anonymity Disallowed', 436:'Bad Identity-Info', 437:'Unsupported Certificate', 438:'Invalid Identity Header', 439:'First Hop Lacks Outbound Support', 470:'Consent Needed', 480:'Temporarily Unavailable', 481:'Call/Transaction Does Not Exist', 482:'Loop Detected.', 483:'Too Many Hops', 484:'Address Incomplete', 485:'Ambiguous', 486:'Busy Here', 487:'Request Terminated', 488:'Not Acceptable Here', 489:'Bad Event', 491:'Request Pending', 493:'Undecipherable', 494:'Security Agreement Required', 500:'Server Internal Error', 501:'Not Implemented', 502:'Bad Gateway', 503:'Service Unavailable', 504:'Server Time-out', 505:'Version Not Supported', 513:'Message Too Large', 580:'Precondition Failure', 600:'Busy Everywhere', 603:'Decline', 604:'Does Not Exist Anywhere', 606:'Not Acceptable'}
-    def __init__(self, code, rawheaders=b'', body=b'', *, reason=None, headers=[]):
-        SIPMessage.__init__(self, rawheaders=rawheaders, body=body, headers=headers)
+    def __init__(self, code, *headers, body=None, reason=None, **kwheaders):
+        SIPMessage.__init__(self, headers, kwheaders, body)
         self.code = code
         self.familycode = code // 100
-        if reason is None:
-            self.reason = self.defaultreasons.get(code, '')
-        else:
-            self.reason = reason
+        self.reason = reason if reason is not None else self.defaultreasons.get(code, '')
 
     def startline(self):
         return 'SIP/2.0 {} {}'.format(self.code, self.reason).encode('utf-8')
@@ -147,16 +201,20 @@ class SIPResponse(SIPMessage):
         
 
 class SIPRequest(SIPMessage):
-    def __new__(cls, requesturi, rawheaders=b'', body=b'', *, headers=()):
+    def __new__(cls, uri, *headers, body=None, **kwheaders):
         cls.method = cls.__name__
         return SIPMessage.__new__(cls)
         
-    def __init__(self, requesturi, rawheaders=b'', body=b'', *, headers=()):
-        SIPMessage.__init__(self, rawheaders=rawheaders, body=body, headers=headers)
-        self.requesturi = requesturi
-
+    def __init__(self, uri, *headers, body=None, **kwheaders):
+        SIPMessage.__init__(self, headers, kwheaders, body)
+        try:
+            self.uri = SIPBNF.URI(uri)
+        except:
+            raise ValueError("{!r} is not a valid Request-URI".format(uri))
+            
+        
     def startline(self):
-        return '{} {} SIP/2.0'.format(self.method, self.requesturi).encode('utf-8')
+        return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
 
     def response(self, code, reason=None):
         return SIPResponse(code, reason, headers=self.headers)
@@ -171,7 +229,22 @@ class REGISTER(SIPRequest):
     def authenticate(self, auth, password):
         pass
 class INVITE(SIPRequest):
-    pass
+    def ack(self, response):
+        if response.familycode == 1:
+            raise ValueError("cannot build an ACK from a 1xx response")
+        headers = []
+        if response.familycode == 2:
+            pass
+        else:
+            for k in ('from', 'cseq', 'call-id', 'via'):
+                v = self.headers[k]
+                if v:
+                    headers.append(v[0].tobytes())
+            if response.headers['to']:
+                headers['to'] = response.headers['to'][0].tobytes()
+        ack = ACK(str(self.uri), headers)
+        return ack
+
 class ACK(SIPRequest):
     pass
 class OPTIONS(SIPRequest):
@@ -210,3 +283,15 @@ if __name__ == '__main__':
     message = Message.REGISTER('sip:osk.nokims.eu',
 rawheaders=b"""Authorization: Digest username="+33900821220@osk.nokims.eu", realm="osk.nokims.eu", nonce="", uri="sip:osk.nokims.eu", response=""
 Expires: 300""")
+
+
+    REQUEST(uri, *headers, body=None, **kwheaders)
+    RESPONSE(code, *headers, reason=None, body=None, **kwheaders)
+
+    register = Message.REGISTER('sip:osk.nokims.eu',
+                                'via:xxxxxxx;branch=fgffrv',
+                                to='sip:+33900821220@osk.nokims.eu',
+                                _from='<sip:+33900821220@osk.nokims.eu>;tag=y258e1J10wLB',
+                                Contact='<sip:+33900821220@172.20.35.253:6060;ob>'
+    )
+    register['to'].display = 'coucou'

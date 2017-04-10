@@ -1,9 +1,8 @@
 #coding: utf-8
 
-import collections
-import re
-
 import pyparsing as pp
+
+from Utils import quote,unquote,ParameterDict
 
 class ParseException(Exception):
     def __init__(self, msg, pos):
@@ -124,85 +123,6 @@ token = pp.Word(pp.alphanums + '-.!%*_+`\'~', min=1)
 word  = pp.Word(pp.alphanums + '-.!%*_+`\'~()<>:\\"/[]?{}', min=1)
 
 
-class ParameterDict:
-    """Dictionary, that has ordered case-insensitive keys.
-
-    from http://code.activestate.com/recipes/66315-case-insensitive-dictionary/
-    + change dict to OrderedDict
-    
-    Keys are retained in their original form
-    when queried with .keys() or .items().
-
-    Implementation: An internal dictionary maps lowercase
-    keys to (key,value) pairs. All key lookups are done
-    against the lowercase keys, but all methods that expose
-    keys to the user retrieve the original keys."""
-    
-    def __init__(self, dict=None):
-        """Create an empty dictionary, or update from 'dict'."""
-        self._dict = collections.OrderedDict()
-        if dict:
-            self.update(dict)
-
-    def __getitem__(self, key):
-        """Retrieve the value associated with 'key' (in any case)."""
-        k = key.lower()
-        return self._dict[k][1]
-
-    def __setitem__(self, key, value):
-        """Associate 'value' with 'key'. If 'key' already exists, but
-        in different case, it will be replaced."""
-        k = key.lower()
-        self._dict[k] = (key, value)
-
-    def has_key(self, key):
-        """Case insensitive test wether 'key' exists."""
-        k = key.lower()
-        return self._dict.has_key(k)
-
-    def keys(self):
-        """List of keys in their original case."""
-        return [v[0] for v in self._dict.values()]
-
-    def values(self):
-        """List of values."""
-        return [v[1] for v in self._dict.values()]
-
-    def items(self):
-        """List of (key,value) pairs."""
-        return self._dict.values()
-
-    def get(self, key, default=None):
-        """Retrieve value associated with 'key' or return default value
-        if 'key' doesn't exist."""
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def setdefault(self, key, default):
-        """If 'key' doesn't exists, associate it with the 'default' value.
-        Return value associated with 'key'."""
-        if not self.has_key(key):
-            self[key] = default
-        return self[key]
-
-    def update(self, dict):
-        """Copy (key,value) pairs from 'dict'."""
-        for k,v in dict.items():
-            self[k] = v
-
-    def __repr__(self):
-        """String representation of the dictionary."""
-        items = ", ".join([("%r: %r" % (k,v)) for k,v in self.items()])
-        return "{%s}" % items
-
-    def __str__(self):
-        """String representation of the dictionary."""
-        return repr(self)
-
-
-
 #   When tokens are used or separators are used between elements,
 #   whitespace is often allowed before or after these characters:
 #
@@ -259,28 +179,7 @@ RDQUOT = DQUOTE + SWS
 #quoted-pair  =  "\" (%x00-09 / %x0B-0C
 #                / %x0E-7F)
 quoted_string = pp.Suppress(SWS) + pp.quotedString
-ESCAPE_RE=re.compile('\\\\[\r\n]')
-def unquote(string):
-    if not (string.startswith('"') and string.endswith('"')):
-        return string
-    string = string[1:-1].replace('\\\\', '\\').replace('\\"', '"')
-    if string and (string[-1] == '\\' or ESCAPE_RE.match(string)):
-        raise Exception("Unexpected backslash in quoted-string")
-    return string
-NONTOKENCHARS_RE=re.compile('[] \t"#$&(),/:;<=>?@[\\^{|}]')
-def quote(string,forcequote=False):
-    if string is None:
-        return None
-    quotealreadythere = False
-    if string.startswith('"') and string.endswith('"'):
-        quotealreadythere = True
-        string = string[1:-1]
-    if quotealreadythere or \
-       forcequote or \
-       NONTOKENCHARS_RE.match(string) or \
-       string!=string.encode('ascii','ignore').decode('ascii'):
-        return '"{}"'.format(string.replace('\\', '\\\\').replace('"', '\\"'))
-    return string
+
 
 #SIP-URI          =  "sip:" [ userinfo ] hostport
 #                    uri-parameters [ headers ]
@@ -669,6 +568,7 @@ generic_param = token + pp.Optional(EQUAL + gen_value)
 #                     *(COMMA auth-param)
 auth_param = token + pp.Suppress(EQUAL) + (token ^ quoted_string)
 Authorization = Parser(token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
+AuthorizationArgs = ('scheme', 'params')
 def AuthorizationParse(headervalue):
     res = Authorization.parse(headervalue)
     scheme = res.pop(0)
@@ -722,6 +622,7 @@ def AuthorizationDisplay(authorization):
 callid = pp.Combine(word + pp.Optional(pp.Literal('@') + word))
 Call_ID = Parser(callid)
 Call_IDAlias = 'i'
+Call_IDArgs = ('callid',)
 def Call_IDParse(headervalue):
     res = Call_ID.parse(headervalue)
     callid = res.pop(0)
@@ -761,6 +662,7 @@ contact_param = pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Supp
 
 Contact = Parser(STAR ^ (pp.Group(contact_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + contact_param))))
 ContactParseAlias = 'm'
+ContactArgs = ('display', 'address', 'params')
 def ContactParse(headervalue):
     res = Contact.parse(headervalue)
     if res[0] == '*':
@@ -782,6 +684,7 @@ def ContactParse(headervalue):
             else:
                 params[k] = None
         yield dict(display=disp, address=addr, params=params)
+ContactMultiple = True
 def ContactDisplay(contact):
     if contact.address == '*':
         return "*"
@@ -820,6 +723,7 @@ def ContactDisplay(contact):
 #Content-Length  =  ( "Content-Length" / "l" ) HCOLON 1*DIGIT
 Content_Length = Parser(pp.Word(pp.nums))
 Content_LengthAlias = 'l'
+Content_LengthArgs = ('length',)
 def Content_LengthParse(headervalue):
     return dict(length=int(Content_Length.parse(headervalue)[0]))
 def Content_LengthDisplay(cl):
@@ -845,6 +749,7 @@ m_subtype = token
 m_type = token
 Content_Type = Parser(m_type + pp.Suppress(SLASH) + m_subtype + pp.ZeroOrMore(pp.Suppress(SEMI) + m_parameter))
 Content_TypeAlias = 'c'
+Content_TypeArgs = ('type', 'subtype', 'params')
 def Content_TypeParse(headervalue):
     res = Content_Type.parse(headervalue)
     type = res.pop(0)
@@ -862,6 +767,7 @@ def Content_TypeDisplay(ct):
 
 #CSeq  =  "CSeq" HCOLON 1*DIGIT LWS Method
 CSeq = Parser(pp.Word(pp.nums) + pp.Suppress(LWS) + Method)
+CSeqArgs = ('seq', 'method')
 def CSeqParse(headervalue):
     res = CSeq.parse(headervalue)
     seq = int(res.pop(0))
@@ -888,6 +794,7 @@ def CSeqDisplay(cseq):
 #
 #Expires     =  "Expires" HCOLON delta-seconds
 Expires = Parser(delta_seconds)
+ExpiresArgs = ('delta',)
 def ExpiresParse(headervalue):
     return dict(delta=int(Expires.parse(headervalue)[0]))
 def ExpiresDisplay(e):
@@ -902,6 +809,7 @@ tag_param = pp.CaselessLiteral('tag') + EQUAL + token
 from_param = tag_param ^ generic_param
 From = Parser(pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Suppress(SEMI) + from_param)))
 FromParseAlias = 'f'
+FromArgs = ('display', 'address', 'params')
 def FromParse(headervalue):
     addr,par = From.parse(headervalue)
     if len(addr) == 2:
@@ -926,6 +834,7 @@ FromDisplay = ContactDisplay
 #
 #Max-Forwards  =  "Max-Forwards" HCOLON 1*DIGIT
 Max_Forwards = Parser(pp.Word(pp.nums))
+Max_ForwardsArgs = ('max',)
 def Max_ForwardsParse(headervalue):
     return dict(max=int(Max_Forwards.parse(headervalue)[0]))
 def Max_ForwardsDisplay(mf):
@@ -970,7 +879,7 @@ def Max_ForwardsDisplay(mf):
 #                       *("," qop-value) RDQUOT
 #qop-value           =  "auth" / "auth-int" / token
 Proxy_Authenticate = Parser(token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
-
+Proxy_AuthenticateArgs = AuthorizationArgs
 def Proxy_AuthenticateParse(headervalue):
     res = Proxy_Authenticate.parse(headervalue)
     scheme = res.pop(0)
@@ -1003,6 +912,7 @@ def Proxy_AuthenticateDisplay(authenticate):
 
 
 #Proxy-Authorization  =  "Proxy-Authorization" HCOLON credentials
+Proxy_AuthorizationArgs = AuthorizationArgs
 Proxy_AuthorizationParse = AuthorizationParse
 Proxy_AuthorizationDisplay = AuthorizationDisplay
 
@@ -1033,6 +943,7 @@ rr_param = generic_param
 route_param = name_addr + pp.ZeroOrMore(pp.Suppress(SEMI) + rr_param)
 
 Route = Parser(pp.Group(route_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + route_param)))
+RouteArgs = ('display', 'address', 'params')
 def RouteParse(headervalue):
     for res in Route.parse(headervalue):
         disp = res.pop(0)
@@ -1046,6 +957,7 @@ def RouteParse(headervalue):
             else:
                 params[k] = None
         yield dict(display=disp, address=addr, params=params)
+RouteMultiple = True
 RouteDisplay = ContactDisplay
 
 
@@ -1071,6 +983,7 @@ RouteDisplay = ContactDisplay
 #             / addr-spec ) *( SEMI to-param )
 #to-param  =  tag-param / generic-param
 ToParseAlias = 't'
+ToArgs = FromArgs
 ToParse = FromParse
 ToDisplay = FromDisplay
 
@@ -1112,6 +1025,7 @@ via_parm = sent_protocol + pp.Suppress(LWS) + sent_by + pp.ZeroOrMore(SEMI + via
 
 Via = Parser(pp.Optional(pp.Group(via_parm) + pp.ZeroOrMore(pp.Group(COMMA + via_parm))))
 ViaAlias = 'v'
+ViaArgs = ('protocol', 'sent_by', 'params')
 def ViaParse(headervalue):
     for res in Via.parse(headervalue):
         protocol = res.pop(0)
@@ -1124,10 +1038,11 @@ def ViaParse(headervalue):
                 params[k] = res.pop(0)
             else:
                 params[k] = None
-        yield {'sent_protocol':protocol, 'sent_by':by, 'params':params}
+        yield {'protocol':protocol, 'sent_by':by, 'params':params}
+ViaMultiple = True
 def ViaDisplay(via):
     params = (";{}{}".format(k, ("={}".format(v) if v is not None else "") or "") for k,v in via.params.items())
-    return "{} {}{}".format(via.sent_protocol, via.sent_by, ''.join(params))
+    return "{} {}{}".format(via.protocol, via.sent_by, ''.join(params))
 
 #
 #Warning        =  "Warning" HCOLON warning-value *(COMMA warning-value)
@@ -1141,6 +1056,7 @@ def ViaDisplay(via):
 
 
 #WWW-Authenticate  =  "WWW-Authenticate" HCOLON challenge
+WWW_AuthenticateArgs = Proxy_AuthenticateArgs
 WWW_AuthenticateParse = Proxy_AuthenticateParse
 WWW_AuthenticateDisplay = Proxy_AuthenticateDisplay
 
