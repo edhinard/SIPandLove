@@ -6,23 +6,6 @@ import copy
 import SIPBNF
 
 
-#
-# Case insensitive dictionnary for headername -> header class        
-class HeaderDict(dict):
-    def get(self, key, default=None):
-        key = key.replace('-', '_').lower()
-        for k in self.keys():
-            if key == k.lower():
-                return super(HeaderDict, self).__getitem__(k)
-        return default
-    def __contains__(self, key):
-        return self.get(key) is not None
-    def __getitem__(self, key):
-        value = self.get(key)
-        if value is None:
-            raise KeyError(key)
-        return value
-
 class HeaderError(Exception):
     def __init__(self, msg, headerstring, name=None):
         self.msg = msg
@@ -48,7 +31,7 @@ class Headers:
     def add(self, *headers, strictparsing=True):
         for header in headers:
             #
-            # A copy of already formed Headers are added to the list
+            # Already formed Headers are copied and added to the list
             #
             if isinstance(header, Header):
                 self._headers.append(copy.deepcopy(header))
@@ -63,7 +46,6 @@ class Headers:
             elif isinstance(header, str):
                 headerbytes = header.encode('utf-8')
             else:
-                print(repr(header))
                 raise TypeError("headers should be of type str or bytes")
 
             #
@@ -102,11 +84,25 @@ class Headers:
     def indices(self, *names):
         if not names:
             yield from range(len(self._headers))
-        lookup = [name.lower() for name in names]
-        lookup.extend([Header.SIPAliases[name] for name in lookup if name in Header.SIPAliases])
-        for i,header in enumerate(self._headers):
-            if header._indexname in lookup:
+        lookup = []
+        once = []
+        for name in names:
+            firstonly = False
+            if name.startswith('_'):
+                firstonly = True
+                name = name[1:]
+            name = name.lower()
+            if name in Header.SIPAliases:
+                name = Header.SIPAliases[name]
+            if not name in lookup:
+                lookup.append(name)
+                if firstonly:
+                    once.append(name)
+        for i,name in enumerate((header._indexname for header in self._headers)):
+            if name in lookup:
                 yield i
+                if name in once:
+                    lookup.remove(name)
     def firstindex(self, name):
         try:
             index = next(self.indices(name))
@@ -467,3 +463,10 @@ toto:tutu"""
     print(To(display='disp', address='here', params=dict(a='1',b='2')))
     print(Via(protocol='A', sent_by='a', params=dict(a='1',b='2')))
     print(WWW_Authenticate(scheme='test', params=dict(a='1',b='2')))
+    print()
+    f=From(name='f', display='disp', address='here', params=dict(a='1',b='2'))
+    print(f)
+    print(repr(f))
+    print(f._name)
+    print(f._indexname)
+    t=To(name='t', display='disp', address='here', params=dict(a='1',b='2'))

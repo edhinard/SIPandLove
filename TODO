@@ -59,6 +59,9 @@ o [vbnt7143] Récupération/Modification des Headers
    getheader(name) retourne le premier Header désigné
    popheaders([name] [,name...]) retire les Headers désignés
    popheader(name) retire le premier Header désigné
+
+   pour les name de getheaders ou popheaders préfixés par _, seul le
+   premier header est retourné
    
 * Ajout en début de liste
    nom du header préfixé par _ dans addheader

@@ -672,7 +672,7 @@ contact_params = c_p_q ^ c_p_expires  ^ generic_param
 contact_param = pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Suppress(SEMI) + contact_params))
 
 Contact = Parser(STAR ^ (pp.Group(contact_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + contact_param))))
-ContactParseAlias = 'm'
+ContactAlias = 'm'
 ContactArgs = ('display', 'address', 'params')
 def ContactParse(headervalue):
     res = Contact.parse(headervalue)
@@ -819,7 +819,7 @@ def ExpiresDisplay(e):
 tag_param = pp.CaselessLiteral('tag') + EQUAL + token
 from_param = tag_param ^ generic_param
 From = Parser(pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Suppress(SEMI) + from_param)))
-FromParseAlias = 'f'
+FromAlias = 'f'
 FromArgs = ('display', 'address', 'params')
 def FromParse(headervalue):
     addr,par = From.parse(headervalue)
@@ -993,7 +993,7 @@ RouteDisplay = ContactDisplay
 #To        =  ( "To" / "t" ) HCOLON ( name-addr
 #             / addr-spec ) *( SEMI to-param )
 #to-param  =  tag-param / generic-param
-ToParseAlias = 't'
+ToAlias = 't'
 ToArgs = FromArgs
 ToParse = FromParse
 ToDisplay = FromDisplay
