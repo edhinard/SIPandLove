@@ -569,6 +569,8 @@ generic_param = token + pp.Optional(EQUAL + gen_value)
 auth_param = token + pp.Suppress(EQUAL) + (token ^ quoted_string)
 Authorization = Parser(token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
 AuthorizationArgs = ('scheme', 'params')
+AuthorizationQuotedparams = ('username', 'realm', 'nonce', 'uri', 'response', 'cnonce', 'opaque')
+AuthorizationUnquotedparams = ('algorithm', 'qop', 'nc')
 def AuthorizationParse(headervalue):
     res = Authorization.parse(headervalue)
     scheme = res.pop(0)
@@ -577,7 +579,7 @@ def AuthorizationParse(headervalue):
         k = res.pop(0)
         v = res.pop(0).strip()
         if scheme.lower()=='digest':
-            if k.lower() in ('username', 'realm', 'nonce', 'uri', 'response', 'cnonce', 'opaque'):
+            if k.lower() in AuthorizationQuotedparams:
                 if not (v.startswith('"') and v.endswith('"')):
                     raise Exception("quotes expected around {} value".format(k))
                 if k.lower() == 'uri':
@@ -591,7 +593,7 @@ def AuthorizationParse(headervalue):
                             raise Exception("32 lowercase hexa digits expected in response")
                 else:
                     v = unquote(v)
-            elif k.lower() in ('algorithm', 'qop', 'nc'):
+            elif k.lower() in AuthorizationUnquotedparams:
                 if v.startswith('"') or v.endswith('"'):
                     raise Exception("unexpected quotes around {} value".format(k))
                 if k.lower() == 'nc':
@@ -602,7 +604,16 @@ def AuthorizationParse(headervalue):
     return dict(scheme=scheme, params=params)
 def AuthorizationDisplay(authorization):
     if authorization.scheme.lower() == 'digest':
-        params = ("{}={}".format(k,quote(str(v),True) if k.lower() not in ('algorithm','nc','qop') else v) for k,v in authorization.params.items())
+        params = []
+        for k,v in authorization.params.items():
+            if v is None: continue
+            if k.lower() in AuthorizationQuotedparams:
+                v = quote(str(v), True)
+            elif k.lower() == 'nc':
+                v = "{:08x}".format(v)
+            elif k.lower() not in AuthorizationUnquotedparams:
+                v = quote(v)
+            params.append("{}={}".format(k,v))
     else:
         params = ("{}={}".format(k,quote(v)) for k,v in authorization.params.items())
     return "{} {}".format(authorization.scheme, ','.join(params))

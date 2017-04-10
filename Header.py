@@ -1,6 +1,7 @@
 #coding: utf-8
 
 import re
+import copy
 
 import SIPBNF
 
@@ -39,18 +40,18 @@ class HeaderError(Exception):
 class Headers:
     HEADERSEP_RE = re.compile(b'\r\n(?![ \t])')
     
-    def __init__(self, *headers, strictparsing=False):
+    def __init__(self, *headers, strictparsing=True):
         self._headers = []
         self.errors = []
         self.add(*headers, strictparsing=strictparsing)
         
-    def add(self, *headers, strictparsing):
+    def add(self, *headers, strictparsing=True):
         for header in headers:
             #
-            # Already formed Headers are added to the list
+            # A copy of already formed Headers are added to the list
             #
             if isinstance(header, Header):
-                self._headers.append(header)
+                self._headers.append(copy.deepcopy(header))
                 continue
 
             
@@ -62,6 +63,7 @@ class Headers:
             elif isinstance(header, str):
                 headerbytes = header.encode('utf-8')
             else:
+                print(repr(header))
                 raise TypeError("headers should be of type str or bytes")
 
             #
@@ -83,51 +85,38 @@ class Headers:
                 else:
                     self._headers.extend(headers)
 
+    def getlist(self, *names):
+        for index in self.indices(*names):
+            yield self._headers[index]
+    def getfirst(self, name):
+        return self._headers[self.firstindex(name)]
 
+    def poplist(self, *names):
+        shift = 0
+        for index in self.indices(*names):
+            yield self._headers.pop(index-shift)
+            shift += 1
+    def popfirst(self, name):
+        return self._headers.pop(self.firstindex(name))
 
-    def append(self, header):
-        if not isinstance(header, Header):
-            raise TypeError("expecting a Header. Got a {}".format(type(header)))
-        self._headers.append(header)
-    def extend(self, headers):
-        for header in headers:
-            self.append(header)
-    def find(self, name):
-        if not isinstance(name, str):
-            raise TypeError("str expected as index")
-        name = name.lower()
+    def indices(self, *names):
+        if not names:
+            yield from range(len(self._headers))
+        lookup = [name.lower() for name in names]
+        lookup.extend([Header.SIPAliases[name] for name in lookup if name in Header.SIPAliases])
         for i,header in enumerate(self._headers):
-            if header._indexname == name:
-                return i
-        return -1
-                
-    def __len__(self):
-        return len(self._headers)
-    def __getitem__(self, nameorindex):
-        if isinstance(nameorindex, int):
-            return self._headers[nameorindex]
-        elif isinstance(nameorindex, str):
-            name = nameorindex.lower()
-            return [header for header in self._headers if header._indexname == name]
-        raise TypeError("keys must be integers or str")
-    def __setitem__(self, index, header):
-        if not isinstance(header, Header):
-            raise TypeError("values must be Header")
-        if not isinstance(index, int):
-            raise TypeError("keys must be integers")
-        self._headers[index] = header
-    def __delitem__(self, nameorindex):
-        if isinstance(nameorindex, int):
-            del self._headers[nameorindex]
-        elif isinstance(nameorindex, str):
-            name = nameorindex.lower()
-            index = 0
-            while index < len(self._headers):
-                if self._headers[index]._indexname == name:
-                    del self._headers[index]
-                else:
-                    index += 1
-        raise TypeError("keys must be integers or str")
+            if header._indexname in lookup:
+                yield i
+    def firstindex(self, name):
+        try:
+            index = next(self.indices(name))
+        except StopIteration:
+            raise Exception("No Header with that name {!r}".format(name))
+        return index
+ 
+    def tobytes(self, headerform='nominal'):
+        return b'\r\n'.join([header.tobytes(headerform) for header in self._headers] + [b''])
+    
     def __iter__(self):
         return iter(self._headers)
     def __contains__(self, name):
@@ -137,9 +126,6 @@ class Headers:
                 return True
         return False
 
-    def tobytes(self, headerform='nominal'):
-        return b'\r\n'.join([header.tobytes(headerform) for header in self._headers] + [b''])
-    
 #
 # Metaclass that automatically adds the attributes
 #   -_name
@@ -150,7 +136,7 @@ class Headers:
 #   -_display
 #  to each Header subclass based on the definition in SIPBNF.py
 #
-# And collect all headers in HeaderDict Header.SIPheaderclasses
+# And collect all headers in dict Header.SIPheaderclasses
 #
 # Exemple:
 #  class Content_Length(Header):
@@ -162,8 +148,6 @@ class Headers:
 #  assert cl._parse == SIPBNF.Content_LengthParse
 #  assert cl._multiple == SIPBNF.Content_LengthMultiple or False
 #  assert cl._display == SIPBNF.Content_LengthDisplay
-#
-#  assert Content_Length == Header.SIPheaderclasses.get('conteNT-lENgth')
 class HeaderMeta(type):
     def __new__(cls, name, bases, dikt):
         if name != 'Header':
@@ -176,15 +160,18 @@ class HeaderMeta(type):
         return super(HeaderMeta, cls).__new__(cls, name, bases, dikt)
     def __init__(cls, name, bases, dikt):
         if name != 'Header':
-            Header.SIPheaderclasses[name] = cls
+            siplowername = name.replace('_', '-').lower()
+            Header.SIPheaderclasses[siplowername] = cls
             alias = getattr(SIPBNF, name + 'Alias', None)
             if alias:
-                Header.SIPheaderclasses[alias] = cls
+                Header.SIPheaderclasses[alias.lower()] = cls
+                Header.SIPAliases[alias.lower()] = siplowername
         super(HeaderMeta, cls).__init__(name, bases, dikt)
     
 # Base class of SIP headers
 class Header(metaclass=HeaderMeta):
-    SIPheaderclasses = HeaderDict()
+    SIPheaderclasses = {}
+    SIPAliases = {}
     
     def __init__(self, name=None, **kwargs):
         if not getattr(self, '_name', False):
@@ -228,7 +215,7 @@ class Header(metaclass=HeaderMeta):
         #
         # Parse the value according to the name of the header
         #
-        cls = Header.SIPheaderclasses.get(name)
+        cls = Header.SIPheaderclasses.get(name.lower())
         if cls:
             error = None
             try:
@@ -464,3 +451,19 @@ toto:tutu"""
         sys.exit(1)
     for header in headers:
         print(repr(header))
+    print()
+    print(Authorization(scheme='test', params=dict(a='1',b='2')))
+    print(Call_ID(callid=0))
+    print(Contact(display='disp', address='here', params=dict(a='1',b='2')))
+    print(Content_Length(length=0))
+    print(Content_Type(type='a', subtype='b', params=dict(a='1',b='2')))
+    print(CSeq(seq=0, method='A'))
+    print(Expires(delta=0))
+    print(From(display='disp', address='here', params=dict(a='1',b='2')))
+    print(Max_Forwards(max=0))
+    print(Proxy_Authenticate(scheme='test', params=dict(a='1',b='2')))
+    print(Proxy_Authorization(scheme='test', params=dict(a='1',b='2')))
+    print(Route(display='disp', address='here', params=dict(a='1',b='2')))
+    print(To(display='disp', address='here', params=dict(a='1',b='2')))
+    print(Via(protocol='A', sent_by='a', params=dict(a='1',b='2')))
+    print(WWW_Authenticate(scheme='test', params=dict(a='1',b='2')))

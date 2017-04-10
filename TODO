@@ -11,9 +11,8 @@
    
    
 
-* Création des Headers
-à la création du message : message(*headers, **kw)
-ou plus tard avec message.addheaders(*headers, **kw)
+o [vbnt7143] Création des Headers à la construction du message
+message(*headers, **kw)
 
 Les headers sont des arguments de type bytes ou str (convertis en
 bytes par encodage utf-8). Ils doivent être conforme à la RFC 3261
@@ -30,13 +29,12 @@ Une exception ValueError est levée en cas d'erreur de parsing sauf si
 strictparsing est faux (par défaut) auquel cas l'exception est
 conservée dans la liste message.errors
 
-   
+*  les kw arguments
 Les kw sont des keyword arguments pour les champs principaux
    des messages (cf ci-dessous)
 
 REGISTER(requri, branch='z9hG4bK_AAA', from='sip:+33900821220@osk.nokims.eu')
 
-   
 
 * Ajout automatique des Headers obligatoires à la création du message
    register = REGISTER('sip:domain.com')
@@ -55,18 +53,15 @@ REGISTER(requri, branch='z9hG4bK_AAA', from='sip:+33900821220@osk.nokims.eu')
    message.length : valeur du du premier Content-Length
    message.type : valeur du du premier Content-Type
    
-
-* Récupération/Modification des Headers
+o [vbnt7143] Récupération/Modification des Headers
+   addheaders(*headers) (idem constructeur)
    getheaders([name] [,name...]) liste des Header filtrée par nom (ou tous)
    getheader(name) retourne le premier Header désigné
-
-   setheaders(name, items) remplace la liste des Header 'name'
-   setheader(name, item) remplace le premier Header désigné
-
-   ack.setheaders('callid', invite.getheaders('callid'))
-   register.setheader('from', 'sip:alice@toto.com')
-
-
+   popheaders([name] [,name...]) retire les Headers désignés
+   popheader(name) retire le premier Header désigné
+   
+* Ajout en début de liste
+   nom du header préfixé par _ dans addheader
 
 * Headers syntaxiquement incorect
    string préfixée par # (fonctionne aussi pour Request-URI)
