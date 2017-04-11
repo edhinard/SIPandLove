@@ -37,7 +37,9 @@ class DecodeInfo:
         if self.klass == SIPResponse:
             return SIPResponse(self.code, *headers.getlist(), reason=self.reason, body=body)
         elif self.klass == SIPRequest:
-            return SIPRequest(self.method, self.requesturi, *headers.getlist(), body=body)
+            return SIPRequest(self.requesturi, *headers.getlist(), body=body, method=self.method)
+        else:
+            return self.klass(self.requesturi, *headers.getlist(), body=body, method=self.method)
 
 class SIPMessage(object):
     @staticmethod
@@ -85,8 +87,8 @@ class SIPMessage(object):
             decodeinfo.requesturi = requesturi
             decodeinfo.istart = r_start
             decodeinfo.iheaders =  requestline.end()
-            decodeinfo.klass = SIPRequest
             decodeinfo.method = requestline.group('method').decode('ascii')
+            decodeinfo.klass = SIPRequest.SIPrequestclasses.get(decodeinfo.method.upper(), SIPRequest)
         
         # Separating Headers from Body
         endofheaders = buf.find(CRLF+CRLF, decodeinfo.istart)
@@ -161,12 +163,18 @@ class SIPResponse(SIPMessage):
     def startline(self):
         return 'SIP/2.0 {} {}'.format(self.code, self.reason).encode('utf-8')
 
-class SIPRequest(SIPMessage):
-    def __new__(cls, uri, *headers, body=None, **kw):
-        cls.method = cls.__name__
-        return SIPMessage.__new__(cls)
-
-    def __init__(self, uri, *headers, body=None, **kw):
+class RequestMeta(type):
+    @staticmethod
+    def __prepare__(name, bases, **dikt):
+        return dict(method=name)
+    def __init__(cls, name, bases, dikt):
+        if name != 'SIPRequest':
+            SIPRequest.SIPrequestclasses[name] = cls
+        super(RequestMeta, cls).__init__(name, bases, dikt)
+        
+class SIPRequest(SIPMessage, metaclass=RequestMeta):
+    SIPrequestclasses = {}
+    def __init__(self, uri, *headers, body=None, method=None, **kw):
         SIPMessage.__init__(self, *headers, body=body)
         if isinstance(uri, SIPBNF.URI):
             self.uri = copy.deepcopy(uri)
@@ -175,6 +183,8 @@ class SIPRequest(SIPMessage):
                 self.uri = SIPBNF.URI(uri)
             except:
                 raise ValueError("{!r} is not a valid Request-URI".format(uri))
+        if method is not None:
+           self.method = method 
 
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
@@ -251,14 +261,17 @@ if __name__ == '__main__':
     import sys
 
     register = REGISTER('sip:osk.nokims.eu')
+    print(register)
+    print(SIPRequest.SIPrequestclasses)
     resp = register.digest(realm="osk.nokims.eu",
-                    nonce="7800e38558e368911AQ8918b7eeaf71a794f910eafbdb376e8848d",
-                    algorithm=None,
-                    qop="auth",
-                    cnonce="zf34l8eTCNX0EljCJieg4ccFBsgdOlq1",
-                    nc=1,
-                    username='+33900821221@osk.nokims.eu',
-                    password='nsnims2008')
+                           uri='sip:osk.nokims.eu',
+                           nonce="7800e38558e368911AQ8918b7eeaf71a794f910eafbdb376e8848d",
+                           algorithm=None,
+                           qop="auth",
+                           cnonce="zf34l8eTCNX0EljCJieg4ccFBsgdOlq1",
+                           nc=1,
+                           username='+33900821221@osk.nokims.eu',
+                           password='nsnims2008')
     print(resp)
     assert resp == 'afc145874b3545922d46de9ecf55ed8e'
 
