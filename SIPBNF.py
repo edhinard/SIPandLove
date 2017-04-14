@@ -294,7 +294,7 @@ SIPS_URI = pp.CaselessLiteral('sips') + pp.Suppress(pp.Literal(':'))+ pp.Optiona
 #                  / ";" / ":" / "@" / "&" / "=" / "+" )
 #query          =  *uric
 uric = pp.ZeroOrMore(pp.Word(unreserved+reserved) ^ escaped)
-opaque_part = pp.Combine((pp.Word(unreserved+';?:@&=+$,', max=1) ^ escaped) + uric)
+opaque_part = pp.Combine(pp.OneOrMore(pp.Word(unreserved+';?:@&=+$,', unreserved+reserved) ^ escaped))
 query = uric
 pchar = pp.ZeroOrMore(pp.Word(unreserved+':@&=+$,') ^ escaped)
 segment = pchar + pp.ZeroOrMore(pp.Literal(';') + pchar)
@@ -370,7 +370,11 @@ class URI:
             return "{}:{}{}{}{}".format(self.scheme, self.userinfo, hostport, ''.join(params), '&'.join(headers) or '')
         else:
             return "{}:{}{}".format(self.scheme, self.uri, "?{}".format(self.query) if self.query is not None else '')
-
+    def __repr__(self):
+        if self.scheme.startswith('sip'):
+            return "URI(scheme={!r}, userinfo={!r}, host={!r}, port={!r}, params={!r}, headers={!r})".format(self.scheme, self.userinfo, self.host, self.port, self.params, self.headers)
+        else:
+            return "URI(scheme={!r}, uri={!r}, query={!r})".format(self.scheme, self.uri, self.query)
 #SIP-Version    =  "SIP" "/" 1*DIGIT "." 1*DIGIT
 #
 #message-header  =  (Accept
@@ -1027,7 +1031,7 @@ via_maddr = pp.CaselessLiteral('maddr') + EQUAL + host
 ttl = pp.Word(pp.nums, max=3)
 via_ttl = pp.CaselessLiteral('ttl') + EQUAL + ttl
 via_params = via_ttl ^ via_maddr ^ via_received ^ via_branch ^ via_extension
-sent_by = hostport =  pp.Combine(host + pp.Optional(COLON + pp.Word(pp.nums)))
+sent_by = host + pp.Optional(pp.Suppress(COLON) + pp.Word(pp.nums), None)
 transport = pp.CaselessLiteral('UDP') ^ pp.CaselessLiteral('TCP') ^ pp.CaselessLiteral('TLS') ^ pp.CaselessLiteral('SCTP') ^ other_transport
 protocol_version = token
 protocol_name = pp.CaselessLiteral('SIP') ^ token
@@ -1036,11 +1040,14 @@ via_parm = sent_protocol + pp.Suppress(LWS) + sent_by + pp.ZeroOrMore(SEMI + via
 
 Via = Parser(pp.Optional(pp.Group(via_parm) + pp.ZeroOrMore(pp.Group(COMMA + via_parm))))
 ViaAlias = 'v'
-ViaArgs = ('protocol', 'sent_by', 'params')
+ViaArgs = ('protocol', 'host', 'port', 'params')
 def ViaParse(headervalue):
     for res in Via.parse(headervalue):
         protocol = res.pop(0)
-        by = res.pop(0)
+        host = res.pop(0)
+        port = res.pop(0)
+        if port is not None:
+            port = int(port)
         params = {}
         while res:
             k = res.pop(0)
@@ -1049,11 +1056,15 @@ def ViaParse(headervalue):
                 params[k] = res.pop(0)
             else:
                 params[k] = None
-        yield {'protocol':protocol, 'sent_by':by, 'params':params}
+        yield dict(protocol=protocol, host=host, port=port, params=params)
 ViaMultiple = True
 def ViaDisplay(via):
     params = (";{}{}".format(k, ("={}".format(v) if v is not None else "") or "") for k,v in via.params.items())
-    return "{} {}{}".format(via.protocol, via.sent_by, ''.join(params))
+    if via.port:
+        hostport = "{}:{}".format(via.host, via.port)
+    else:
+        hostport = via.host
+    return "{} {}{}".format(via.protocol, hostport, ''.join(params))
 
 #
 #Warning        =  "Warning" HCOLON warning-value *(COMMA warning-value)

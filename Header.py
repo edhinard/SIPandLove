@@ -84,6 +84,7 @@ class Headers:
     def indices(self, *names):
         if not names:
             yield from range(len(self._headers))
+            return
         lookup = []
         once = []
         for name in names:
@@ -163,7 +164,15 @@ class HeaderMeta(type):
                 Header.SIPheaderclasses[alias.lower()] = cls
                 Header.SIPAliases[alias.lower()] = siplowername
         super(HeaderMeta, cls).__init__(name, bases, dikt)
+
+class Byteheader():
+    _indexname = None
+    def __init__(self, raw):
+        self.raw = raw
+    def tobytes(self, headerform=None):
+        return self.raw
     
+        
 # Base class of SIP headers
 class Header(metaclass=HeaderMeta):
     SIPheaderclasses = {}
@@ -186,6 +195,9 @@ class Header(metaclass=HeaderMeta):
     UNFOLDING_RE = re.compile('[ \t]*\r\n[ \t]+')
     @staticmethod
     def parse(rawheader):
+        if rawheader[0] == b'#'[0]:
+            return [Byteheader(rawheader[1:])]
+
         #
         # Check that header content is a valid UTF-8 string
         #
@@ -385,68 +397,74 @@ class WWW_Authenticate(Header):
 if __name__ == '__main__':
     import sys
     
-    goodheaders = """Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz\r
-Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz\r
-Via: SIP /2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz, SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz, SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz\r
-Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz\r
-Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz\r
-Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb\r
-Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb\r
-Route: "route" <sip:172.20.56.7;lr>\r
-Route: "une route" <sip:172.20.56.7;lr>\r
-Route: "\xc3\xa0 droite ou \xc3\xa0 gauche ?" <sip:172.20.56.7;lr>\r
-Route: "\xc8\x81\xe8\x80\x81\xf0\x90\x80\x80  \xf4\x80\x80\x80  " <sip:172.20.56.7;lr>\r
-Route: une route bien droite <sip:172.20.56.7;lr>\r
-Max-Forwards: 70\r
-Max-Forwards:\r
- 70\r
-From: sip:alice@toto.com;lr\r
-From: sip:alice@toto.com; lr\r
-From: "with quote \\" and backslash \\\\." <sip:172.20.56.7;lr>\r
-From: <sip:alice@toto.com>;tag\r
-From: sip:+33960700014@sip.osk.com;lr;toto=titi\r
-From: sip:+33960700014@sip.osk.com;lr;toto=titi\r
-From: "aaaaaaaa" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto\r
-From: "bbbbb cccc èèè\u0123\u4567\u89ab\ucdef" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto\r
-From: "bbbbb cccc èèè \u1234\u5678\u9abc" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto\r
-From: <sip:+33960700014@sip.osk.com>\r
-From: <sip:+33960700014@sip.osk.com>;tag=QNUPkiWuoMCQvYGw6VvQX9tzF-.1Oa5w\r
-v: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz\r
-To: <sip:+33960700014@sip.osk.com>\r
-To: sip:+33960700014@sip.osk.com\r
-CSeq: 60011 REGISTER\r
-CSeq: 60011\r
-      REGISTER\r
-User-Agent: PJSUA v2.5.5 Linux-4.8.0.27/x86_64/glibc-2.24\r
-Contact: *\r
-Contact: <sip:+33960700014@172.20.35.253:6064;ob>\r
-Contact: <sip:+33960700014@172.20.35.253:6064>,"coucou" <sip:+33960700014@172.20.35.253:6064;ob>,sip:+33960700014@172.20.35.253:6064;ob\r
-Expires: 300\r
-Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS\r
-Content-Length:  0\r
-Authorization: Digest username="", response="0123456789abcdef0123456789abcdef"\r
-Authorization: Digest username="a",realm="sip.osk.com"\r
-Authorization: Digest username="a", realm="sip.osk.com"\t\t ,\tnonce="",uri="sip:sip.osk.com",response=""\r
-Authorization: Toto a="a", b= b  , c\t="",d=\'d\' ,e = 8\r
-Authorization: Digest uri="sip:sip.osk.com", username="+33960700014@sip.osk.com"\r
-Authorization : Digest username="+33960700014@sip.osk.com", realm="sip.osk.com", nonce="", uri="sip:sip.osk.com",\r
-\t       response=""\r
-Content-Length:  0\r
-Authorization: Digest uri="sip:sip.osk.com", username="+33960700014@sip.osk.com"\r
-Authorization : Digest username="+33960700014@sip.osk.com", realm="sip.osk.com", nonce="", uri="sip:sip.osk.com",\r
-\t       response=""\r
-Content-Length:  0\r
-toto: titi\r
-toto:tutu"""
+    goodheaders = (
+        'Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
+        'Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
+        'Via: SIP /2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz, SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz, SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
+        'Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
+        'Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
+        'Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb',
+        'Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb',
+        'Route: "route" <sip:172.20.56.7;lr>',
+        'Route: "une route" <sip:172.20.56.7;lr>',
+        'Route: "\xc3\xa0 droite ou \xc3\xa0 gauche ?" <sip:172.20.56.7;lr>',
+        'Route: "\xc8\x81\xe8\x80\x81\xf0\x90\x80\x80  \xf4\x80\x80\x80  " <sip:172.20.56.7;lr>',
+        'Route: une route bien droite <sip:172.20.56.7;lr>',
+        'Max-Forwards: 70',
+        '''Max-Forwards:\r
+ 70''',
+        'From: sip:alice@toto.com;lr',
+        'From: sip:alice@toto.com; lr',
+        'From: "with quote \\" and backslash \\\\." <sip:172.20.56.7;lr>',
+        'From: <sip:alice@toto.com>;tag',
+        'From: sip:+33960700014@sip.osk.com;lr;toto=titi',
+        'From: sip:+33960700014@sip.osk.com;lr;toto=titi',
+        'From: "aaaaaaaa" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto',
+        'From: "bbbbb cccc èèè\u0123\u4567\u89ab\ucdef" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto',
+        'From: "bbbbb cccc èèè \u1234\u5678\u9abc" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto',
+        'From: <sip:+33960700014@sip.osk.com>',
+        'From: <sip:+33960700014@sip.osk.com>;tag=QNUPkiWuoMCQvYGw6VvQX9tzF-.1Oa5w',
+        'v: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
+        'To: <sip:+33960700014@sip.osk.com>',
+        'To: sip:+33960700014@sip.osk.com',
+        'CSeq: 60011 REGISTER',
+        '''CSeq: 60011\r
+      REGISTER''',
+        'User-Agent: PJSUA v2.5.5 Linux-4.8.0.27/x86_64/glibc-2.24',
+        'Contact: *',
+        'Contact: <sip:+33960700014@172.20.35.253:6064;ob>',
+        'Contact: <sip:+33960700014@172.20.35.253:6064>,"coucou" <sip:+33960700014@172.20.35.253:6064;ob>,sip:+33960700014@172.20.35.253:6064;ob',
+        'Expires: 300',
+        'Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS',
+        'Content-Length:  0',
+        'Authorization: Digest username="", response="0123456789abcdef0123456789abcdef"',
+        'Authorization: Digest username="a",realm="sip.osk.com"',
+        'Authorization: Digest username="a", realm="sip.osk.com"\t\t ,\tnonce="",uri="sip:sip.osk.com",response=""',
+        'Authorization: Toto a="a", b= b  , c\t="",d=\'d\' ,e = 8',
+        'Authorization: Digest uri="sip:sip.osk.com", username="+33960700014@sip.osk.com"',
+        '''Authorization : Digest username="+33960700014@sip.osk.com", realm="sip.osk.com", nonce="", uri="sip:sip.osk.com",\r
+\t       response=""''',
+        'Content-Length:  0',
+        'Authorization: Digest uri="sip:sip.osk.com", username="+33960700014@sip.osk.com"',
+        '''Authorization : Digest username="+33960700014@sip.osk.com", realm="sip.osk.com", nonce="", uri="sip:sip.osk.com",\r
+\t       response=""''',
+        'Content-Length:  0',
+        'toto: titi',
+        'toto:tutu'
+        )
 
 
-    try:
-        headers = Headers(goodheaders, strictparsing=True)
-    except HeaderError as err:
-        print(err)
-        sys.exit(1)
-    for header in headers:
-        print(repr(header))
+    for string in goodheaders:
+        print("*",string)
+        try:
+            headers = Headers(string, strictparsing=True)
+        except Exception as err:
+            print(err)
+            sys.exit(1)
+        for header in headers:
+            print(header)
+            print(repr(header))
+        print()
     print()
     print(Authorization(scheme='test', params=dict(a='1',b='2')))
     print(Call_ID(callid=0))
