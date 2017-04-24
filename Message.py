@@ -126,10 +126,18 @@ class SIPMessage(object):
         
 
     def addheaders(self, *headers):
-        self._headers.add(*headers)
+        return self._headers.add(*headers)
 
     def getheaders(self, *names):
         return self._headers.getlist(*names)
+
+    def hasheader(self, name):
+        try:
+            dummy = self._headers.getfirst(name)
+            return True
+        except:
+            pass
+        return False
 
     def getheader(self, name):
         return self._headers.getfirst(name)

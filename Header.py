@@ -29,6 +29,7 @@ class Headers:
         self.add(*headers, strictparsing=strictparsing)
         
     def add(self, *headers, strictparsing=True):
+        newheaders = []
         for header in headers:
             #
             # Already formed Headers are copied and added to the list
@@ -58,14 +59,14 @@ class Headers:
                 # Parse the header
                 #
                 try:
-                    headers = Header.parse(rawheader)
+                    newheaders.extend(Header.parse(rawheader))
                 except HeaderError as error:
                     if strictparsing:
                         raise
                     else:
                         self.errors.append(error)
-                else:
-                    self._headers.extend(headers)
+        self._headers.extend(newheaders)
+        return newheaders
 
     def getlist(self, *names):
         for index in self.indices(*names):
