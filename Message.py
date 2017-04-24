@@ -197,7 +197,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
 
-    def addauthorization(self, response, **kwargs):
+    def addauthorization(self, response, nc=1, **kwargs):
         for authenticate in response.getheaders('WWW-Authenticate', 'Proxy-Authenticate'):
             if authenticate.scheme.lower() == 'digest':
                 params = dict(realm = authenticate.params.get('realm'),
@@ -207,7 +207,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                               algorithm = authenticate.params.get('algorithm'),
                               cnonce = ''.join((random.choice(string.ascii_letters) for _ in range(20))),
                               qop = authenticate.params.get('qop'),
-                              nc = 1)
+                              nc = nc)
                 params['response'] = self.digest(**params, **kwargs)
                 if authenticate._name == 'WWW-Authenticate':
                     auth=Header.Authorization(scheme=authenticate.scheme, params=params)

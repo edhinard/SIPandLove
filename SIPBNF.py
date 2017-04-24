@@ -630,7 +630,21 @@ def AuthorizationDisplay(authorization):
 #nextnonce            =  "nextnonce" EQUAL nonce-value
 #response-auth        =  "rspauth" EQUAL response-digest
 #response-digest      =  LDQUOT *LHEX RDQUOT
-
+nextnonce = pp.Literal('nextnonce') + pp.Suppress(EQUAL) + quoted_string
+message_qop = pp.Literal('qop') + pp.Suppress(EQUAL) + token
+response_auth = pp.Literal('rspauth') + pp.Suppress(EQUAL) + pp.Suppress(LDQUOT) + pp.Optional(pp.Word(LHEX),'') + pp.Suppress(RDQUOT)
+cnonce = pp.Literal('cnonce') + pp.Suppress(EQUAL) + quoted_string
+nonce_count = pp.Literal('nc') + pp.Suppress(EQUAL) + pp.Word(LHEX, exact=8)
+ainfo = pp.Group(nextnonce ^ message_qop ^ response_auth ^ cnonce ^ nonce_count)
+Authentication_Info = Parser(ainfo + pp.ZeroOrMore(pp.Suppress(COMMA) + ainfo))
+Authentication_InfoArgs = ('params',)
+def Authentication_InfoParse(headervalue):
+    for k,v in Authentication_Info.parse(headervalue):
+        yield dict(params={k:v})
+def Authentication_InfoDisplay(auth):
+    print(auth.params)
+    return ",".join(("{}={}".format(k,v) for k,v in auth.params.items()))
+Authentication_InfoMultiple = True
 
 #Call-ID  =  ( "Call-ID" / "i" ) HCOLON callid
 #callid   =  word [ "@" word ]

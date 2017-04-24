@@ -277,8 +277,8 @@ class Header(metaclass=HeaderMeta):
 #class Allow(Header):
 #    pass
 
-#class Authentication_Info(Header):
-#    pass
+class Authentication_Info(Header):
+    pass
 
 class Authorization(Header):
     pass
@@ -415,7 +415,7 @@ if __name__ == '__main__':
         '''Max-Forwards:\r
  70''',
         'From: sip:alice@toto.com;lr',
-        'From: sip:alice@toto.com; lr',
+#        'From: sip:alice@toto.com; lr',
         'From: "with quote \\" and backslash \\\\." <sip:172.20.56.7;lr>',
         'From: <sip:alice@toto.com>;tag',
         'From: sip:+33960700014@sip.osk.com;lr;toto=titi',
@@ -425,19 +425,27 @@ if __name__ == '__main__':
         'From: "bbbbb cccc èèè \u1234\u5678\u9abc" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto',
         'From: <sip:+33960700014@sip.osk.com>',
         'From: <sip:+33960700014@sip.osk.com>;tag=QNUPkiWuoMCQvYGw6VvQX9tzF-.1Oa5w',
+
         'v: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
+
         'To: <sip:+33960700014@sip.osk.com>',
         'To: sip:+33960700014@sip.osk.com',
+
         'CSeq: 60011 REGISTER',
         '''CSeq: 60011\r
       REGISTER''',
+
         'User-Agent: PJSUA v2.5.5 Linux-4.8.0.27/x86_64/glibc-2.24',
+
         'Contact: *',
         'Contact: <sip:+33960700014@172.20.35.253:6064;ob>',
         'Contact: <sip:+33960700014@172.20.35.253:6064>,"coucou" <sip:+33960700014@172.20.35.253:6064;ob>,sip:+33960700014@172.20.35.253:6064;ob',
         'Expires: 300',
+
         'Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS',
+
         'Content-Length:  0',
+
         'Authorization: Digest username="", response="0123456789abcdef0123456789abcdef"',
         'Authorization: Digest username="a",realm="sip.osk.com"',
         'Authorization: Digest username="a", realm="sip.osk.com"\t\t ,\tnonce="",uri="sip:sip.osk.com",response=""',
@@ -449,6 +457,14 @@ if __name__ == '__main__':
         'Authorization: Digest uri="sip:sip.osk.com", username="+33960700014@sip.osk.com"',
         '''Authorization : Digest username="+33960700014@sip.osk.com", realm="sip.osk.com", nonce="", uri="sip:sip.osk.com",\r
 \t       response=""''',
+
+        'Authentication-Info: nc=00000005',
+        'Authentication-Info: rspauth="ccc"',
+        'Authentication-Info: rspauth=""',
+        'Authentication-Info: qop=xx',
+        'Authentication-Info: nextnonce="iupiuh"',
+        'Authentication-Info: nc=00000005,rspauth="ccc",qop=xx,nextnonce="iupiuh"',
+
         'Content-Length:  0',
         'toto: titi',
         'toto:tutu'
@@ -480,7 +496,7 @@ if __name__ == '__main__':
     print(Proxy_Authorization(scheme='test', params=dict(a='1',b='2')))
     print(Route(display='disp', address='here', params=dict(a='1',b='2')))
     print(To(display='disp', address='here', params=dict(a='1',b='2')))
-    print(Via(protocol='A', sent_by='a', params=dict(a='1',b='2')))
+#    print(Via(protocol='A', sent_by='a', params=dict(a='1',b='2')))
     print(WWW_Authenticate(scheme='test', params=dict(a='1',b='2')))
     print()
     f=From(name='f', display='disp', address='here', params=dict(a='1',b='2'))
