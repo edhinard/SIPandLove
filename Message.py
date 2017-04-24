@@ -197,25 +197,32 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
 
-    def addauthorization(self, response, nc=1, **kwargs):
+    def addauthorization(self, response, nc=1, cnonce=None, **kwargs):
         for authenticate in response.getheaders('WWW-Authenticate', 'Proxy-Authenticate'):
             if authenticate.scheme.lower() == 'digest':
-                params = dict(realm = authenticate.params.get('realm'),
-                              uri = str(self.uri),
-                              username = kwargs.pop('username'),
-                              nonce = authenticate.params.get('nonce'),
-                              algorithm = authenticate.params.get('algorithm'),
-                              cnonce = ''.join((random.choice(string.ascii_letters) for _ in range(20))),
-                              qop = authenticate.params.get('qop'),
-                              nc = nc)
-                params['response'] = self.digest(**params, **kwargs)
+                params = self.digest(realm = authenticate.params.get('realm'),
+                                     username = kwargs.pop('username'),
+                                     nonce = authenticate.params.get('nonce'),
+                                     algorithm = authenticate.params.get('algorithm'),
+                                     qop=authenticate.params.get('qop'),
+                                     nc=nc,
+                                     cnonce=cnonce or ''.join((random.choice(string.ascii_letters) for _ in range(20))),
+                                     **kwargs)
                 if authenticate._name == 'WWW-Authenticate':
                     auth=Header.Authorization(scheme=authenticate.scheme, params=params)
                 else:
                     auth=Header.Proxy_Authorization(scheme=authenticate.scheme, params=params)
                 self.addheaders(auth)
 
-    def digest(self, *, realm, uri, nonce, algorithm, cnonce, qop, nc, username, password):
+    def digest(self, *, realm, nonce, algorithm, cnonce, qop, nc, username, password):
+        uri = str(self.uri)
+        params = dict(realm = realm,
+                      uri = uri,
+                      username = username,
+                      nonce = nonce,
+                      algorithm = algorithm,
+                      qop=qop,
+        )
         algorithm = algorithm.lower() if algorithm else None
         if algorithm is not None:
             if algorithm not in ('md5', 'md5-sess'):
@@ -225,11 +232,11 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
         qop = qop.lower() if qop else None
         if qop and qop not in ('auth', 'auth-int'):
             pass
-        nc = "{:08x}".format(nc) if nc is not None else None
         
         ha1 = self.md5hash(username, realm, password)
         if algorithm == 'md5-sess':
             ha1 = self.md5hash(ha1, nonce, cnonce)
+            params.update(cnonce=cnonce)
             
         if not qop or qop == 'auth':
             ha2 = self.md5hash(self.method, uri)
@@ -239,8 +246,10 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
         if not qop:
             response = self.md5hash(ha1, nonce, ha2)
         else:
-            response = self.md5hash(ha1, nonce, nc, cnonce, qop, ha2)
-        return response
+            response = self.md5hash(ha1, nonce, "{:08x}".format(nc), cnonce, qop, ha2)
+            params.update(cnonce=cnonce, nc=nc)
+        params.update(response=response)
+        return params
 
     def md5hash(self, *params):
         s = b':'.join((param.encode('utf-8') if isinstance(param, str) else param for param in params))
