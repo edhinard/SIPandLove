@@ -42,8 +42,8 @@ class Headers:
             #
             # Other are bytes sequence that must be decoded
             #
-            if isinstance(header, bytes):
-                headerbytes = header
+            if isinstance(header, (bytes, bytearray)):
+                headerbytes = bytes(header)
             elif isinstance(header, str):
                 headerbytes = header.encode('utf-8')
             else:

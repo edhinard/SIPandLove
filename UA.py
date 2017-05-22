@@ -12,12 +12,9 @@ import Transaction
 import Timer
 
 class UA(threading.Thread):
-    def __init__(self, transport=Transport.DEFAULT, T1=None, T2=None, T4=None):
+    def __init__(self, transport=None, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
-        self.transport = transport
-        if self.transport is None:
-            raise ValueError("No default Transport")
-
+        self.transport = transport or Transport.Transport()
         self.timers = Timer.TimerManager(T1, T2, T4)
 
         self.newtranslock = threading.Lock()

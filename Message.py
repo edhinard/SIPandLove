@@ -115,8 +115,8 @@ class SIPMessage(object):
             self.body = b''
         elif isinstance(body, str):
             self.body = body.encode('utf8')
-        elif isinstance(body, bytes):
-            self.body = body
+        elif isinstance(body, (bytes,bytearray)):
+            self.body = bytes(body)
         else:
             raise TypeError("body should be of type str or bytes")
         self._headers = Header.Headers(*headers)
@@ -147,6 +147,12 @@ class SIPMessage(object):
 
     def popheader(self, name):
         return self._headers.popfirst(name)
+
+    def _gettotag(self):
+        return self.getheader('To').params.get('tag')
+    def _settotag(self, tag):
+        self.getheader('To').params['tag'] = tag
+    totag = property(_gettotag, _settotag)
 
     def tobytes(self, headerform='nominal'):
         ret = [self.startline(), b'\r\n']
@@ -192,7 +198,8 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             except:
                 raise ValueError("{!r} is not a valid Request-URI".format(uri))
         if method is not None:
-           self.method = method 
+           self.method = method
+        self.responsetotag = None
 
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
@@ -255,6 +262,18 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
         s = b':'.join((param.encode('utf-8') if isinstance(param, str) else param for param in params))
         return hashlib.md5(s).hexdigest()
 
+    def response(self, code, *headers, body=None, reason=None, **kw):
+        resp = SIPResponse(code,
+                           *self.getheaders('via', 'from', 'to', 'call-id', 'cseq'),
+                           *headers,
+                           body=body,
+                           reason=reason,
+                           **kw)
+        if code != 100 and resp.totag is None:
+            if self.responsetotag is None:
+                self.responsetotag = ''.join((random.choice(string.ascii_letters) for _ in range(10)))
+            resp.totag = self.responsetotag
+        return resp
     
 class REGISTER(SIPRequest):
     pass

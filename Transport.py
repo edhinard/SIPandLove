@@ -10,11 +10,56 @@ import time
 
 import Message
 
+import socket
+import fcntl
+import struct
+
+
+# s = socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP)
+#  s.setsockopt(socket.SOL_IP, socket.IP_HDRINCL, 1)
+#  while 1:
+#    data, addr = s.recvfrom(1508)
+#    print "Packet from %r: %r" % (addr,data)
+
+
+# http://code.activestate.com/recipes/439094
+def get_ip_address(ifname):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    return socket.inet_ntoa(fcntl.ioctl(
+        s.fileno(),
+        0x8915,  # SIOCGIFADDR
+        struct.pack('256s', ifname[:15])
+    )[20:24])
+
+#
+# transport doit connaitre son ip (donner l'if est ok)
+# envoyer une requete est différent d'envoyer une réponse
+#
+#  req: il faut donner au transport la destination ip/port/protocol
+#    transport complète Via avec localip et localport
+#    possible changement de protocole TCP->UDP si trop gros
+#
+#  resp: transport trouve ip/port dans le via
+#
+#  dans les 2 cas:
+#    ajout content-length
+#    retour possible d'erreur vers la transaction : erreur tcp ou icmp
+#
+#donc:
+# dans le pipe on place bien dans les 2 sens :
+#  protocol, remoteaddr, packet(bytes)
+#   + erreur=string dans le sens transport -> transaction
+#
+# en émission, ajout du CL, récup remoteaddr du via ou ajout localaddr dans le via, conversion tobytes
+# en réception, conversion frombytes, ajout via.received si requete et transfert au transaction manager
+
 class Transport(threading.Thread):
-    def __init__(self, interface, listenport=5060, tcp_only=False):
+    def __init__(self, interface=None, listenport=5060, tcp_only=False):
         threading.Thread.__init__(self, daemon=True)
-        self.listenhost = '172.20.35.253' # interface -> ip address
-        self.listenhost = '192.168.1.18'
+        if interface is None:
+            self.listenhost = '0.0.0.0'
+        else:
+            self.listenhost = get_ip_address(interface)
         self.listenport = listenport
         self.pipe,childpipe = multiprocessing.Pipe()
         self.process = multiprocessing.Process(target=Transport.processloop, args=(self.listenhost, self.listenport, childpipe, tcp_only), daemon=True)
@@ -22,9 +67,25 @@ class Transport(threading.Thread):
         self.ingress = None
         self.start()
 
-    def send(self, message, addr, protocol):
+    def send(self, message, addr=None, protocol=None):
         if not issubclass(message, Message.SIPMessage):
             raise TypeError('expecting SIPMessage subclass as message')
+        try:
+            via = message.getheader('via')
+        except:
+            via = None
+        if isinstace(message, Message.SIPrequest):
+            request = message
+            if via is None:
+                via = request.addheaders('Via: SIP/2.0/UDP 0.0.0.0')[0]
+            via.host = self.listenhost
+            if self.localport
+            
+
+        elif isinstance(message, Message.SIPResponse):
+            response = message
+            if not response.hasheader('via'):
+                raise Exception(
         self.pipe.send((protocol, addr, message.tobytes()))
 
     # Thread loop
