@@ -37,9 +37,9 @@ class DecodeInfo:
         if self.klass == SIPResponse:
             return SIPResponse(self.code, *headers.getlist(), reason=self.reason, body=body)
         elif self.klass == SIPRequest:
-            return SIPRequest(self.requesturi, *headers.getlist(), body=body, method=self.method)
+            return SIPRequest(self.requesturi, *headers.getlist(), body=body, method=self.method, incrementcounter=False)
         else:
-            return self.klass(self.requesturi, *headers.getlist(), body=body, method=self.method)
+            return self.klass(self.requesturi, *headers.getlist(), body=body, method=self.method, incrementcounter=False)
 
 class SIPMessage(object):
     @staticmethod
@@ -121,10 +121,6 @@ class SIPMessage(object):
             raise TypeError("body should be of type str or bytes")
         self._headers = Header.Headers(*headers)
 
-        cl = Header.Content_Length(length=len(self.body))
-        self._headers.add(cl)
-        
-
     def addheaders(self, *headers):
         return self._headers.add(*headers)
 
@@ -140,7 +136,11 @@ class SIPMessage(object):
         return False
 
     def getheader(self, name):
-        return self._headers.getfirst(name)
+        try:
+            header = self._headers.getfirst(name)
+        except:
+            return None
+        return header
 
     def popheaders(self, *names):
         return self._headers.poplist(*names)
@@ -148,10 +148,37 @@ class SIPMessage(object):
     def popheader(self, name):
         return self._headers.popfirst(name)
 
+    def _getbranch(self):
+        via = self.getheader('Via')
+        if via:
+            return via.params.get('branch')
+    def _setbranch(self, branch):
+        via = self.getheader('Via')
+        if not via:
+            raise Exception("missing Via header")
+        via.params['branch'] = branch
+    branch = property(_getbranch, _setbranch)
+
+    def _getfromtag(self):
+        f = self.getheader('From')
+        if f:
+            return f.params.get('tag')
+    def _setfromtag(self, tag):
+        f = self.getheader('From')
+        if not f:
+            raise Exception("missing From header")
+        f.params['tag'] = tag
+    fromtag = property(_getfromtag, _setfromtag)
+
     def _gettotag(self):
-        return self.getheader('To').params.get('tag')
+        t = self.getheader('To')
+        if t:
+            return t.params.get('tag')
     def _settotag(self, tag):
-        self.getheader('To').params['tag'] = tag
+        t = self.getheader('To')
+        if not t:
+            raise Exception("missing To header")
+        t.params['tag'] = tag
     totag = property(_gettotag, _settotag)
 
     def tobytes(self, headerform='nominal'):
@@ -187,9 +214,12 @@ class RequestMeta(type):
         super(RequestMeta, cls).__init__(name, bases, dikt)
         
 class SIPRequest(SIPMessage, metaclass=RequestMeta):
+    messagecount = 0
     SIPrequestclasses = {}
-    def __init__(self, uri, *headers, body=None, method=None, **kw):
+    def __init__(self, uri, *headers, body=None, method=None, incrementcounter=True, **kw):
         SIPMessage.__init__(self, *headers, body=body)
+        if incrementcounter:
+            SIPRequest.messagecount += 1
         if isinstance(uri, SIPBNF.URI):
             self.uri = copy.deepcopy(uri)
         else:
@@ -199,7 +229,27 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                 raise ValueError("{!r} is not a valid Request-URI".format(uri))
         if method is not None:
            self.method = method
-        self.responsetotag = None
+
+        if not self.getheader('v'):
+            self.addheaders(Header.Via(protocol='???',
+                                       host='0.0.0.0',
+                                       port=None,
+                                       params={}))
+        if self.branch is None:
+            self.branch = 'z9hG4bK_MYSIP{}_{}'.format(SIPRequest.messagecount, self.randomstr())
+        if self.getheader('f') and self.fromtag is None:
+            self.fromtag = 'MYSIP{}_{}'.format(SIPRequest.messagecount, self.randomstr())
+        self.responsetotag = self.randomstr()
+        if not self.getheader('Max-Forwards'):
+              self.addheaders(Header.Max_Forwards(max=70))
+        if not self.getheader('i'):
+              self.addheaders(Header.Call_ID(callid='MYSIP{}_{}'.format(SIPRequest.messagecount, self.randomstr(20))))
+        if not self.getheader('CSeq'):
+              self.addheaders(Header.CSeq(seq=random.randint(0,0x7fff),method=self.method))
+
+    @staticmethod
+    def randomstr(l=10):
+        return ''.join((random.choice(string.ascii_letters) for _ in range(l)))
 
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')

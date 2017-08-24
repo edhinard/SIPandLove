@@ -1047,9 +1047,11 @@ via_ttl = pp.CaselessLiteral('ttl') + EQUAL + ttl
 via_params = via_ttl ^ via_maddr ^ via_received ^ via_branch ^ via_extension
 sent_by = host + pp.Optional(pp.Suppress(COLON) + pp.Word(pp.nums), None)
 transport = pp.CaselessLiteral('UDP') ^ pp.CaselessLiteral('TCP') ^ pp.CaselessLiteral('TLS') ^ pp.CaselessLiteral('SCTP') ^ other_transport
-protocol_version = token
-protocol_name = pp.CaselessLiteral('SIP') ^ token
-sent_protocol = pp.Combine(protocol_name + SLASH + protocol_version + SLASH + transport)
+#protocol_version = token
+#protocol_name = pp.CaselessLiteral('SIP') ^ token
+protocol_version = pp.Literal('2.0')
+protocol_name = pp.CaselessLiteral('SIP')
+sent_protocol = pp.Suppress(pp.Combine(protocol_name + SLASH + protocol_version + SLASH)) + transport
 via_parm = sent_protocol + pp.Suppress(LWS) + sent_by + pp.ZeroOrMore(SEMI + via_params)
 
 Via = Parser(pp.Optional(pp.Group(via_parm) + pp.ZeroOrMore(pp.Group(COMMA + via_parm))))
@@ -1078,7 +1080,7 @@ def ViaDisplay(via):
         hostport = "{}:{}".format(via.host, via.port)
     else:
         hostport = via.host
-    return "{} {}{}".format(via.protocol, hostport, ''.join(params))
+    return "SIP/2.0/{} {}{}".format(via.protocol, hostport, ''.join(params))
 
 #
 #Warning        =  "Warning" HCOLON warning-value *(COMMA warning-value)

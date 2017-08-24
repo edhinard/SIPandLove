@@ -5,10 +5,10 @@ import socket
 import select
 import sys
 import multiprocessing
-import threading
 import time
 
-import Message
+from . import Message
+from . import Header
 
 import socket
 import fcntl
@@ -28,104 +28,104 @@ def get_ip_address(ifname):
     return socket.inet_ntoa(fcntl.ioctl(
         s.fileno(),
         0x8915,  # SIOCGIFADDR
-        struct.pack('256s', ifname[:15])
+        struct.pack('256s', ifname[:15].encode('ascii'))
     )[20:24])
 
-#
-# transport doit connaitre son ip (donner l'if est ok)
-# envoyer une requete est différent d'envoyer une réponse
-#
-#  req: il faut donner au transport la destination ip/port/protocol
-#    transport complète Via avec localip et localport
-#    possible changement de protocole TCP->UDP si trop gros
-#
-#  resp: transport trouve ip/port dans le via
-#
-#  dans les 2 cas:
-#    ajout content-length
-#    retour possible d'erreur vers la transaction : erreur tcp ou icmp
-#
-#donc:
-# dans le pipe on place bien dans les 2 sens :
-#  protocol, remoteaddr, packet(bytes)
-#   + erreur=string dans le sens transport -> transaction
-#
-# en émission, ajout du CL, récup remoteaddr du via ou ajout localaddr dans le via, conversion tobytes
-# en réception, conversion frombytes, ajout via.received si requete et transfert au transaction manager
-
-class Transport(threading.Thread):
-    def __init__(self, interface=None, listenport=5060, tcp_only=False):
-        threading.Thread.__init__(self, daemon=True)
-        if interface is None:
-            self.listenhost = '0.0.0.0'
-        else:
-            self.listenhost = get_ip_address(interface)
+class Transport(multiprocessing.Process):
+    def __init__(self, interface, listenport=5060, proxy=None, tcp_only=False):
+        self.listenhost = get_ip_address(interface)
         self.listenport = listenport
-        self.pipe,childpipe = multiprocessing.Pipe()
-        self.process = multiprocessing.Process(target=Transport.processloop, args=(self.listenhost, self.listenport, childpipe, tcp_only), daemon=True)
-        self.process.start()
-        self.ingress = None
+        self.proxy = proxy
+        self.tcp_only = tcp_only
+        self.pipe,self.childpipe = multiprocessing.Pipe()
+        multiprocessing.Process.__init__(self, daemon=True)
         self.start()
 
-    def send(self, message, addr=None, protocol=None):
-        if not issubclass(message, Message.SIPMessage):
-            raise TypeError('expecting SIPMessage subclass as message')
-        try:
-            via = message.getheader('via')
-        except:
-            via = None
-        if isinstace(message, Message.SIPrequest):
-            request = message
-            if via is None:
-                via = request.addheaders('Via: SIP/2.0/UDP 0.0.0.0')[0]
-            via.host = self.listenhost
-            if self.localport
-            
+    def send(self, message, addr=None):
+        if not isinstance(message, Message.SIPMessage):
+            raise TypeError("expecting SIPMessage subclass as message")
+
+        via = message.getheader('via')
+        if isinstance(message, Message.SIPRequest):
+            if addr is None and self.proxy:
+                addr = self.proxy
+            port = 5060
+
+            protocol = 'TCP' if self.tcp_only else 'UDP'
+            if via:
+                if via.protocol == '???':
+                    via.protocol = protocol
+                if via.host == '0.0.0.0':
+                    via.host = self.listenhost
+                if via.port == None and self.listenport != 5060:
+                    via.port = self.listenport
 
         elif isinstance(message, Message.SIPResponse):
-            response = message
-            if not response.hasheader('via'):
-                raise Exception(
-        self.pipe.send((protocol, addr, message.tobytes()))
+            if via:
+                protocol = via.protocol
+            else:
+                protocol = 'TCP' if self.tcp_only else 'UDP'
+            if addr is None:
+                if via:
+                    if protocol == 'TCP':
+                        addr = via.host
+                    else:
+                        addr = via.params.get('received', via.host)
+            if addr is None:
+                raise Exception("no address where to send response")
+            if via:
+                if protocol == 'TCP':
+                    port = via.port or 5060
+                else:
+                    port = via.params.get('rport', via.port) or 5060
+            else:
+                port = 5060
 
-    # Thread loop
-    def run(self):
-        while True:
-            protocol,addr,message = self.pipe.recv()
+        if protocol == 'TCP' or len(message.body) and not message.getheader('l'):
+            message.addheaders(Header.Content_Length(length=len(message.body)))
+
+        self.pipe.send((protocol, (addr, port), message.tobytes()))
+
+    def recv(self, timeout=0.0):
+        if self.pipe.poll(timeout):
+            protocol,(addr,port),message = self.pipe.recv()
             message = Message.SIPMessage.frombytes(message)
-            if message and self.ingress:
-                message.transport = self
-                # modify Via: with protocol and addr ?
-                self.ingress(message)
+            if message:
+                if isinstance(message, Message.SIPRequest):
+                    via = message.getheader('via')
+                    if via:
+                        if via.host != addr:
+                            via.params['received'] = addr
+                        if via.params.has_key('rport'):
+                            via.params['received'] = addr
+                            via.params['rport'] = port
+                return message
+        return None
                 
-    # Process loop
-    @staticmethod
-    def processloop(srcip, srcport, pipe, tcp_only):
+    def run(self):
         poll = select.poll()
-        poll.register(pipe, select.POLLIN)
+        poll.register(self.childpipe, select.POLLIN)
         
         maintcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         maintcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        maintcp.bind((srcip, srcport))
+        maintcp.bind((self.listenhost, self.listenport))
         maintcp.listen()
         poll.register(maintcp, select.POLLIN)
 
-        if not tcp_only:
-            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            udp.bind((srcip, srcport))
-            poll.register(udp, select.POLLIN)
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp.bind((self.listenhost, self.listenport))
+        poll.register(udp, select.POLLIN)
 
         tcpsockets = ServiceSockets(poll)
         while True:
             for fd,event in poll.poll(1000):
-
                 # Packet comming from upper layer --> send to remote address
-                if fd == pipe.fileno():
-                    transport,remoteaddr,packet = pipe.recv()
-                    if transport == 'tcp':
+                if fd == self.childpipe.fileno():
+                    protocol,remoteaddr,packet = self.childpipe.recv()
+                    if protocol == 'TCP':
                         tcpsockets.sendto(packet, remoteaddr)
-                    elif transport == 'udp':
+                    elif protocol == 'UDP':
                         udp.sendto(packet, remoteaddr)
 
                 # Incomming TCP connection --> new socket added (will be read in the next result of poll)
@@ -133,7 +133,7 @@ class Transport(threading.Thread):
                     tcpsockets.addnew(*maintcp.accept())
 
                 # Incomming UDP packet --> decode and send to upper layer
-                elif not tcp_only and fd == udp.fileno():
+                elif fd == udp.fileno():
                     packet,remoteaddr = udp.recvfrom(8192)
                     decodeinfo = Message.SIPMessage.predecode(packet)
 
@@ -154,7 +154,7 @@ class Transport(threading.Thread):
                         elif decodeinfo.klass == Message.SIPResponse:
                             continue
 
-                    pipe.send(('udp',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
+                    self.childpipe.send(('UDP',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
 
                 # Incomming TCP buffer --> assemble with previous buffer, decode and send to upper layer
                 else:
@@ -184,14 +184,12 @@ class Transport(threading.Thread):
                             tcpsockets.delete(fd)
                             break
 
-                        pipe.send(('tcp',remoteaddr,buf[decodeinfo.istart:decodeinfo.iend]))
+                        self.childpipe.send(('TCP',remoteaddr,buf[decodeinfo.istart:decodeinfo.iend]))
                         del buf[:decodeinfo.iend]
             decodeinfo = None
                             
             tcpsockets.cleanup()
 
-DEFAULT = Transport('eno1')
-            
 class ServiceSockets:
     TIMEOUT = 32.
     
@@ -238,18 +236,15 @@ class ServiceSockets:
     def cleanup(self):
         # TCP socket that are idle for more than 64*T1 sec are closed [18]
         currenttime = time.monotonic()
-        print(len(self.byfd))
         for fd,(sock,addr,buf,lasttime) in list(self.byfd.items()):
             if currenttime - lasttime[0] > self.TIMEOUT:
                 self.delete(fd)
 
 if __name__ == '__main__':                
-    t = Transport('x')
-    while 1:
-        transport,dstaddr,message = t.pipe.recv()
-        message = Message.SIPMessage.frombytes(message)
-        print(message)
-        if isinstance(message, Message.SIPRequest):
-            t.pipe.send((transport,dstaddr,message.response(200).tobytes()))
-        else:
-            t.pipe.send((transport,dstaddr,b'OK'))
+    t = Transport('eno1', proxy='194.12.137.40', listenport=5061, tcp_only=True)
+    t.send(Message.REGISTER('sip:osk.nokims.eu',
+                            'From:sip:+33900821220@osk.nokims.eu',
+                            'To:sip:+33900821220@osk.nokims.eu'))
+    t.send(Message.REGISTER('sip:osk.nkims.eu'))
+    print(t.recv(5))
+    print(t.recv(5))
