@@ -2,9 +2,10 @@
 # coding: utf-8
 
 import socket
-import select
 import sys
+import threading
 import multiprocessing
+import multiprocessing.connection
 import time
 
 from . import Message
@@ -13,6 +14,9 @@ from . import Header
 import socket
 import fcntl
 import struct
+
+
+errorcb = None
 
 
 # s = socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP)
@@ -31,32 +35,39 @@ def get_ip_address(ifname):
         struct.pack('256s', ifname[:15].encode('ascii'))
     )[20:24])
 
+
 class Transport(multiprocessing.Process):
-    def __init__(self, interface, listenport=5060, proxy=None, tcp_only=False):
-        self.listenhost = get_ip_address(interface)
+    def __init__(self, listenip, listenport=5060, tcp_only=False):
+        self.listenip = listenip
         self.listenport = listenport
-        self.proxy = proxy
         self.tcp_only = tcp_only
+        self.error = ErrorListener.newlistener(listenip)
         self.pipe,self.childpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self, daemon=True)
         self.start()
 
-    def send(self, message, addr=None):
+    def send(self, message, addr=(None,5060), protocol=None):
         if not isinstance(message, Message.SIPMessage):
             raise TypeError("expecting SIPMessage subclass as message")
+        if isinstance(addr, (list,tuple)):
+            if len(addr) != 2:
+                raise Exception("expecting 2 values in addr, got {!r}".format(addr))
+            ip,port = addr
+        else:
+            ip = addr
+            port = 5060
 
         via = message.getheader('via')
         if isinstance(message, Message.SIPRequest):
-            if addr is None and self.proxy:
-                addr = self.proxy
-            port = 5060
+            if ip is None:
+                raise Exception("missing address")
 
             protocol = 'TCP' if self.tcp_only else 'UDP'
             if via:
                 if via.protocol == '???':
                     via.protocol = protocol
                 if via.host == '0.0.0.0':
-                    via.host = self.listenhost
+                    via.host = self.listenip
                 if via.port == None and self.listenport != 5060:
                     via.port = self.listenport
 
@@ -65,186 +76,245 @@ class Transport(multiprocessing.Process):
                 protocol = via.protocol
             else:
                 protocol = 'TCP' if self.tcp_only else 'UDP'
-            if addr is None:
+            if ip is None:
                 if via:
                     if protocol == 'TCP':
-                        addr = via.host
+                        ip = via.host
                     else:
-                        addr = via.params.get('received', via.host)
-            if addr is None:
+                        ip = via.params.get('received', via.host)
+            if ip is None:
                 raise Exception("no address where to send response")
             if via:
                 if protocol == 'TCP':
                     port = via.port or 5060
                 else:
                     port = via.params.get('rport', via.port) or 5060
-            else:
-                port = 5060
 
         if protocol == 'TCP' or len(message.body) and not message.getheader('l'):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
-        self.pipe.send((protocol, (addr, port), message.tobytes()))
+        self.pipe.send((protocol, (ip, port), message.tobytes()))
 
     def recv(self, timeout=0.0):
         if self.pipe.poll(timeout):
-            protocol,(addr,port),message = self.pipe.recv()
+            protocol,(ip,port),message = self.pipe.recv()
             message = Message.SIPMessage.frombytes(message)
             if message:
                 if isinstance(message, Message.SIPRequest):
                     via = message.getheader('via')
                     if via:
-                        if via.host != addr:
-                            via.params['received'] = addr
+                        if via.host != ip:
+                            via.params['received'] = ip
                         if via.params.has_key('rport'):
-                            via.params['received'] = addr
+                            via.params['received'] = ip
                             via.params['rport'] = port
                 return message
         return None
                 
     def run(self):
-        poll = select.poll()
-        poll.register(self.childpipe, select.POLLIN)
-        
         maintcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         maintcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        maintcp.bind((self.listenhost, self.listenport))
+        maintcp.bind((self.listenip, self.listenport))
         maintcp.listen()
-        poll.register(maintcp, select.POLLIN)
 
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp.bind((self.listenhost, self.listenport))
-        poll.register(udp, select.POLLIN)
+        udp.bind((self.listenip, self.listenport))
 
-        tcpsockets = ServiceSockets(poll)
+        tcpsockets = ServiceSockets()
         while True:
-            for fd,event in poll.poll(1000):
+            for obj in multiprocessing.connection.wait([self.childpipe, maintcp, udp] + list(tcpsockets), 1):
                 # Packet comming from upper layer --> send to remote address
-                if fd == self.childpipe.fileno():
+                if obj == self.childpipe:
                     protocol,remoteaddr,packet = self.childpipe.recv()
-                    if protocol == 'TCP':
-                        tcpsockets.sendto(packet, remoteaddr)
-                    elif protocol == 'UDP':
-                        udp.sendto(packet, remoteaddr)
+                    try:
+                        if protocol == 'TCP':
+                            tcpsockets.sendto(packet, remoteaddr)
+                        elif protocol == 'UDP':
+                            udp.sendto(packet, remoteaddr)
+                        err = None
+                    except OSError as e:
+                        err = e.strerror
+                    except Exception as e:
+                        err = str(e)
+                    if err is not None:
+                        self.error.pipein.send((err, remoteaddr, packet))
+                        continue
 
                 # Incomming TCP connection --> new socket added (will be read in the next result of poll)
-                elif fd == maintcp.fileno():
-                    tcpsockets.addnew(*maintcp.accept())
+                elif obj == maintcp:
+                    tcpsockets.add(*maintcp.accept())
 
                 # Incomming UDP packet --> decode and send to upper layer
-                elif fd == udp.fileno():
-                    packet,remoteaddr = udp.recvfrom(8192)
+                elif obj == udp:
+                    packet,remoteaddr = udp.recvfrom(65536)
                     decodeinfo = Message.SIPMessage.predecode(packet)
 
                     # Discard inconsistent messages
-                    if not decodeinfo.klass or not decodeinfo.ibody:
+                    if not decodeinfo.status != 'OK':
                         continue
                         
-                    # If the message has no Content-Length the message body is assumed to end at the end of the packet [18.3]
-                    if decodeinfo.contentlength is None:
-                        decodeinfo.iend = len(packet)
-                        decodeinfo.contentlength = decodeinfo.iend - decodeinfo.ibody
-
-                    # Truncated Request --> 400, truncated Response are discarded [18.3]
-                    if decodeinfo.contentlength > decodeinfo.iend - decodeinfo.ibody:
-                        if decodeinfo.klass == Message.SIPRequest:
-                            message = decodeinfo.finish()
-                            udp.sendto(message.response(400).tobytes(), remoteaddr)
-                        elif decodeinfo.klass == Message.SIPResponse:
-                            continue
-
                     self.childpipe.send(('UDP',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
 
-                # Incomming TCP buffer --> assemble with previous buffer, decode and send to upper layer
+                # Incomming TCP buffer --> assemble with previous buffer(done by ServiceSocket class), decode and send to upper layer
                 else:
-                    newbuf = tcpsockets.readfrom(fd)
-                    # Socket closed by peer
-                    if not newbuf:
-                        tcpsockets.delete(fd)
-                        continue
-                    
-                    buf,remoteaddr = tcpsockets.getinfo(fd)
-                    buf += newbuf
+                    assert(obj in tcpsockets)
+                    buf,remoteaddr = tcpsockets.recvfrom(obj)
                     while True:
                         decodeinfo = Message.SIPMessage.predecode(buf)
 
-                        # Ignore inconsistent messages, wait for the rest of the buffer
-                        if not decodeinfo.klass or not decodeinfo.ibody:
+                        # Erroneous messages of message missing a Content-Length makes the stream desynchronized
+                        if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and decodeinfo.contentlength is None):
+                            tcpsockets.delete(obj)
                             break
 
-                        # If the message miss a Content-Length, the stream cannot be synchronized
-                        #   --> 400 for Requests and socket is closed
-                        if decodeinfo.contentlength is None:
-                            decodeinfo.iend = decodeinfo.ibody
-                            decodeinfo.contentlength = 0
-                            if decodeinfo.klass == Message.SIPRequest:
-                                message = decodeinfo.finish()
-                                tcpsockets.sendto(message.response(400).tobytes(), remoteaddr)
-                            tcpsockets.delete(fd)
+                        # Ignore inconsistent messages, wait for the rest of the buffer
+                        if decodeinfo.status != 'OK':
                             break
 
                         self.childpipe.send(('TCP',remoteaddr,buf[decodeinfo.istart:decodeinfo.iend]))
                         del buf[:decodeinfo.iend]
-            decodeinfo = None
                             
             tcpsockets.cleanup()
 
 class ServiceSockets:
     TIMEOUT = 32.
     
-    def __init__(self, poll):
-        self.poll = poll
-        self.byfd = {}
+    def __init__(self):
+        self.bysock = {}
         self.byaddr = {}
 
-    def addnew(self, sock, addr):
+    def add(self, sock, addr):
         newitem = (sock, addr, bytearray(), [time.monotonic()])
-        fd = sock.fileno()
-        self.byfd[fd] = newitem
+        self.bysock[sock] = newitem
         self.byaddr[addr] = newitem
-        self.poll.register(fd, select.POLLIN | select.POLLHUP)
+
+    def __iter__(self):
+        for sock in self.bysock.keys():
+            yield sock
+
+    def __contains__(self, sock):
+        return sock in self.bysock
 
     def sendto(self, packet, addr):
         if addr not in self.byaddr:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.connect(addr)
-                self.addnew(sock, addr)
-            except:
-                return
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect(addr)
+            self.add(sock, addr)
         sock,addr,buf,lasttime = self.byaddr[addr]
         lasttime[0] = time.monotonic()
         sock.send(packet)
 
-    def readfrom(self, fd):
-        sock,addr,buf,lasttime = self.byfd[fd]
+    def recvfrom(self, sock):
+        sock,addr,buf,lasttime = self.bysock[sock]
         lasttime[0] = time.monotonic()
-        return sock.recv(8192)
-
-    def getinfo(self, fd):
-        sock,addr,buf,lasttime = self.byfd[fd]
+        newbuf = sock.recv(8192)
+        if not newbuf:
+            self.delete(obj)
+        buf += newbuf
         return buf,addr
 
-    def delete(self, fd):
-        self.poll.unregister(fd)
-        item = self.byfd[fd]
-        addr = item[1]
-        del self.byfd[fd]
+    def delete(self, sock):
+        sock,addr,buf,lasttime = self.bysock[sock]
+        try:
+            sock.close()
+        except:
+            pass
+        del self.bysock[sock]
         del self.byaddr[addr]
 
     def cleanup(self):
         # TCP socket that are idle for more than 64*T1 sec are closed [18]
         currenttime = time.monotonic()
-        for fd,(sock,addr,buf,lasttime) in list(self.byfd.items()):
+        for sock,(s,addr,buf,lasttime) in list(self.bysock.items()):
             if currenttime - lasttime[0] > self.TIMEOUT:
-                self.delete(fd)
+                self.delete(sock)
 
-if __name__ == '__main__':                
-    t = Transport('eno1', proxy='194.12.137.40', listenport=5061, tcp_only=True)
+
+class ErrorListener(threading.Thread):
+    listeners = {}
+    lock = threading.Lock()
+
+    @staticmethod
+    def neswlistener(ip):
+        with ErrorListener.lock:
+            if not ip in ErrorListener.listeners:
+                ErrorListener.listeners[ip] = ErrorListener(ip)
+            return ErrorListener.listeners[ip]
+    
+    def __init__(self, ip):
+        self.pipeout,self.pipein = multiprocessing.Pipe(duplex=False)
+        self.rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
+        self.rawsock.bind((ip,0))
+        threading.Thread.__init__(self, daemon=True)
+        self.start()
+        
+    def run(self):
+        global errorcb
+        while True:
+            ready = multiprocessing.connection.wait((self.rawsock,self.pipeout))[0]
+
+            # Partially parse ICMP packet received on raw socket and call error callback
+            #  -check it is a type,code combination that should be transmitted to TU
+            #  -check it holds UDP or TCP
+            #  -parse destination IP and port
+            #  -parse SIP message
+            if self.rawsock == ready:
+                packet,addr = self.rawsock.recvfrom(65536)
+                if len(packet) < 20+8+20+8: # IP | ICMP | IP | ...
+                    continue
+                ipproto, = struct.unpack_from('B', packet, 9)
+                if ipproto != 1: # ICMP
+                    continue
+                icmptype, icmpcode = struct.unpack_from('2b', packet, 20)
+                if icmptype == 3: # Destination Unreachable
+                    if icmpcode == 0:
+                        err = "Network Unreachable"
+                    elif icmpcode == 1:
+                        err = "Host Unreachable"
+                    elif icmpcode == 2:
+                        err = "Protocol Unreachable"
+                    elif icmpcode == 3:
+                        err = "Port Unreachable"
+                    else:
+                        continue
+                elif icmptype == 12:
+                    err = "Parameter Problem"
+                else:
+                    continue
+                ip2proto, = struct.unpack_from('B', packet, 20+8+9)
+                if ip2proto == 6: # TCP
+                    message = packet[20+8+20+20:]
+                elif ip2proto == 17: # UDP
+                    message = packet[20+8+20+8:]
+                else:
+                    continue
+                dstip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+16)))
+                dstport, = struct.unpack_from('!H', packet, 20+8+20+2)
+                if errorcb:
+                    message = Message.SIPMessage.frombytes(message)
+                    with ErrorListener.lock:
+                        errorcb(err, (dstip,dstport), message)
+
+            # Unqueue error from the pipe and call error callback
+            elif self.pipeout == ready:
+                err,addr,message = self.pipeout.recv()
+                if errorcb:
+                    message = Message.SIPMessage.frombytes(message)
+                    with ErrorListener.lock:
+                        errorcb(err, addr, message)
+
+
+if __name__ == '__main__':
+    def e(err, addr, message):
+        print(repr(err),addr,'\n',message)
+    errorcb = e
+    t = Transport(get_ip_address('eno1'), listenport=5061, tcp_only=True)
     t.send(Message.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
-                            'To:sip:+33900821220@osk.nokims.eu'))
-    t.send(Message.REGISTER('sip:osk.nkims.eu'))
-    print(t.recv(5))
-    print(t.recv(5))
+                            'To:sip:+33900821220@osk.nokims.eu'),
+           '194.2.137.40'
+    )
+    t.send(Message.REGISTER('sip:osk.nkims.eu'), '127.0.0.1')
+    print(t.recv(3))
+    print(t.recv(3))

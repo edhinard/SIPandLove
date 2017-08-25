@@ -15,18 +15,16 @@ from . import Header
 CRLF = b'\r\n'
 STATUS_LINE_RE = re.compile(b'(?:\r\n|^)SIP/2.0 (?P<code>[1-7]\d\d) (?P<reason>.+)\r\n', re.IGNORECASE)
 REQUEST_LINE_RE = re.compile(b'''(?:\r\n|^)(?P<method>[A-Za-z0-9.!%*_+`'~-]+) (?P<requesturi>[^ ]+) SIP/2.0\r\n''', re.IGNORECASE)
-CONTENT_LENGTH_RE = re.compile(b'\r\n(?:Content-length|l)[ \t]*:\s*(?P<length>\d+)\s*(\r\n|$)', re.IGNORECASE)
+CONTENT_LENGTH_RE = re.compile(b'\r\n(?:Content-length|l)[ \t]*:\s*(?P<length>\d+)\s*\r\n', re.IGNORECASE)
 UNFOLDING_RE = re.compile(b'[ \t]*\r\n[ \t]+')
 class DecodeInfo:
     def __init__(self, buf):
         self.buf = buf
+        self.status = 'UNFINISHED'
         self.klass = None; self.startline = None;
         self.istart = None; self.iheaders = None; self.iblank = None; self.ibody = None; self.iend = None
         self.contentlength = None
-        self.parsingerrors = []
-
-    def is_ok(self):
-        return self.istart is not None and self.iend is not None and self.iend <= len(self.buf)
+        self.error = None
 
     def finish(self):
         rawheaders=self.buf[self.iheaders:self.iblank]
@@ -45,7 +43,7 @@ class SIPMessage(object):
     @staticmethod
     def frombytes(buf):
         decodeinfo = SIPMessage.predecode(buf)
-        if decodeinfo.is_ok():
+        if decodeinfo.status == 'OK':
             return decodeinfo.finish()
         return None
     
@@ -71,7 +69,8 @@ class SIPMessage(object):
                 reason = statusline.group('reason')
                 decodeinfo.reason = reason.decode('utf-8')
             except UnicodeError as err:
-                decodeinfo.parsingerrors.append("UTF-8 encoding error ({} {!r}) in Reason-Phrase: {!r}".format(err.reason, err.object[err.start:err.end], reason))
+                decodeinfo.error = "UTF-8 encoding error ({} {!r}) in Reason-Phrase: {!r}".format(err.reason, err.object[err.start:err.end], reason)
+                decodeinfo.status = 'ERROR'
                 return decodeinfo
             decodeinfo.istart = s_start
             decodeinfo.iheaders =  statusline.end()
@@ -82,7 +81,8 @@ class SIPMessage(object):
                 requesturi = requestline.group('requesturi')
                 requesturi = requesturi.decode('ascii')
             except:
-                decodeinfo.parsingerrors.append("ASCII encoding error in Request-URI: {!r}".format(requesturi))
+                decodeinfo.error = "ASCII encoding error in Request-URI: {!r}".format(requesturi)
+                decodeinfo.status = 'ERROR'
                 return decodeinfo
             decodeinfo.requesturi = requesturi
             decodeinfo.istart = r_start
@@ -92,21 +92,21 @@ class SIPMessage(object):
         
         # Separating Headers from Body
         endofheaders = buf.find(CRLF+CRLF, decodeinfo.istart)
-        if endofheaders == -1:
-            m = CONTENT_LENGTH_RE.search(buf, pos=decodeinfo.iheaders-2)
-        else:
+        if endofheaders != -1:
+            decodeinfo.status = 'OK'
             decodeinfo.iblank = endofheaders+2
             decodeinfo.ibody = decodeinfo.iblank+2
-            m = CONTENT_LENGTH_RE.search(buf, pos=decodeinfo.iheaders-2, endpos=decodeinfo.iblank)
+            decodeinfo.iend = len(buf)
 
-        # Finding Content-Length
-        if m:
-            contentheader = m.group(0).strip()
-            contentheader = UNFOLDING_RE.sub(b' ', contentheader)
-            if not b'\r' in contentheader and not b'\n' in contentheader:
-                decodeinfo.contentlength = int(m.group('length'))
-                if decodeinfo.ibody:
-                    decodeinfo.iend = decodeinfo.ibody + decodeinfo.contentlength
+            # Finding Content-Length
+            m = CONTENT_LENGTH_RE.search(buf, pos=decodeinfo.iheaders-2, endpos=decodeinfo.iblank)
+            if m:
+                contentheader = m.group(0).strip()
+                contentheader = UNFOLDING_RE.sub(b' ', contentheader)
+                if not b'\r' in contentheader and not b'\n' in contentheader:
+                    decodeinfo.contentlength = int(m.group('length'))
+                    if decodeinfo.contentlength > decodeinfo.iend - decodeinfo.ibody:
+                        decodeinfo.status = 'TRUNCATED'
 
         return decodeinfo
     
@@ -147,6 +147,17 @@ class SIPMessage(object):
 
     def popheader(self, name):
         return self._headers.popfirst(name)
+
+    def _getlength(self):
+        cl = self.getheader('Content-Length')
+        if cl:
+            return cl.length
+    def _setlength(self, length):
+        cl = self.getheader('Content-Length')
+        if not cl:
+            raise Exception("missing Content-Length header")
+        cl.length = length
+    length = property(_getlength, _setlength)
 
     def _getbranch(self):
         via = self.getheader('Via')
