@@ -7,6 +7,8 @@ import logging
 import copy
 import random
 import string
+import logging
+log = logging.getLogger('Message')
 
 from . import SIPBNF
 from . import Header
@@ -35,9 +37,9 @@ class DecodeInfo:
         if self.klass == SIPResponse:
             return SIPResponse(self.code, *headers.getlist(), reason=self.reason, body=body)
         elif self.klass == SIPRequest:
-            return SIPRequest(self.requesturi, *headers.getlist(), body=body, method=self.method, incrementcounter=False)
+            return SIPRequest(self.requesturi, *headers.getlist(), body=body, method=self.method)
         else:
-            return self.klass(self.requesturi, *headers.getlist(), body=body, method=self.method, incrementcounter=False)
+            return self.klass(self.requesturi, *headers.getlist(), body=body, method=self.method)
 
 class SIPMessage(object):
     @staticmethod
@@ -142,8 +144,8 @@ class SIPMessage(object):
             return None
         return header
 
-    def popheaders(self, *names):
-        return self._headers.poplist(*names)
+    def removeheader(self, name):
+        self._headers.remove(name)
 
     def popheader(self, name):
         return self._headers.popfirst(name)
@@ -169,6 +171,8 @@ class SIPMessage(object):
             raise Exception("missing Via header")
         via.params['branch'] = branch
     branch = property(_getbranch, _setbranch)
+    def newbranch(self, tag=None):
+        self.branch = 'z9hG4bK{}{}'.format(tag or '_MYSIP_', self.randomstr())
 
     def _getfromtag(self):
         f = self.getheader('From')
@@ -225,12 +229,9 @@ class RequestMeta(type):
         super(RequestMeta, cls).__init__(name, bases, dikt)
         
 class SIPRequest(SIPMessage, metaclass=RequestMeta):
-    messagecount = 0
     SIPrequestclasses = {}
-    def __init__(self, uri, *headers, body=None, method=None, incrementcounter=True, **kw):
+    def __init__(self, uri, *headers, body=None, method=None, **kw):
         SIPMessage.__init__(self, *headers, body=body)
-        if incrementcounter:
-            SIPRequest.messagecount += 1
         if isinstance(uri, SIPBNF.URI):
             self.uri = copy.deepcopy(uri)
         else:
@@ -247,14 +248,14 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                                        port=None,
                                        params={}))
         if self.branch is None:
-            self.branch = 'z9hG4bK_MYSIP{}_{}'.format(SIPRequest.messagecount, self.randomstr())
+            self.newbranch()
         if self.getheader('f') and self.fromtag is None:
-            self.fromtag = 'MYSIP{}_{}'.format(SIPRequest.messagecount, self.randomstr())
+            self.fromtag = self.randomstr()
         self.responsetotag = self.randomstr()
         if not self.getheader('Max-Forwards'):
               self.addheaders(Header.Max_Forwards(max=70))
         if not self.getheader('i'):
-              self.addheaders(Header.Call_ID(callid='MYSIP{}_{}'.format(SIPRequest.messagecount, self.randomstr(20))))
+              self.addheaders(Header.Call_ID(callid=self.randomstr(20)))
         if not self.getheader('CSeq'):
               self.addheaders(Header.CSeq(seq=random.randint(0,0x7fff),method=self.method))
 
@@ -277,8 +278,10 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                                      cnonce=cnonce or ''.join((random.choice(string.ascii_letters) for _ in range(20))),
                                      **kwargs)
                 if authenticate._name == 'WWW-Authenticate':
+                    self.removeheader('Authorization')
                     auth=Header.Authorization(scheme=authenticate.scheme, params=params)
                 else:
+                    self.removeheader('Proxy-Authorization')
                     auth=Header.Proxy_Authorization(scheme=authenticate.scheme, params=params)
                 self.addheaders(auth)
 

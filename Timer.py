@@ -4,6 +4,9 @@
 import multiprocessing
 import threading
 import time
+
+def arm(duration, cb, *args, **kwargs):
+    MANAGER.arm(duration, cb, *args, **kwargs)
     
 class TimerManager(threading.Thread):
     def __init__(self):
@@ -65,3 +68,4 @@ class TimerManager(threading.Thread):
                 sortedtimers.sort()
             
         
+MANAGER = TimerManager()

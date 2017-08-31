@@ -74,11 +74,17 @@ class Headers:
     def getfirst(self, name):
         return self._headers[self.firstindex(name)]
 
-    def poplist(self, *names):
-        shift = 0
-        for index in self.indices(*names):
-            yield self._headers.pop(index-shift)
-            shift += 1
+#    def poplist(self, *names):
+#        shift = 0
+#        for index in self.indices(*names):
+#            yield self._headers.pop(index-shift)
+#            shift += 1
+    def remove(self, name):
+        try:
+            while True:
+                self.popfirst(name)
+        except:
+            pass
     def popfirst(self, name):
         return self._headers.pop(self.firstindex(name))
 

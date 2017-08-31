@@ -1,122 +1,120 @@
 #! /usr/bin/python3
 # coding: utf-8
 
-import sys
 import multiprocessing
 import threading
-import collections
+import logging
+log = logging.getLogger('UA')
 
-import Message
-import Transport
-import Transaction
-import Timer
+from . import SIPBNF
+from . import Message
+from . import Transport
+from . import Transaction
+from . import Timer
 
 class UA(threading.Thread):
-    def __init__(self, transport=None, T1=None, T2=None, T4=None):
+    def __init__(self, transport, T1, T2, T4):
         threading.Thread.__init__(self, daemon=True)
-        self.transport = transport or Transport.Transport()
-        self.timers = Timer.TimerManager(T1, T2, T4)
-
-        self.newtranslock = threading.Lock()
-        self.newtrans = []
-        self.transactions = set()
-        
+        Transport.errorcb = self.transporterror
+        self.transport = transport
+        self.T1 = T1
+        self.T2 = T2
+        self.T4 = T4
+        self.lock = threading.Lock()
+        self.clienttransactions = {}
+        self.servertransactions = {}
         self.start()
-        self.transport.ingress = self.ingress
-
-    def newtransaction(request):
-        if not issubclass(request, Message.SIPRequest):
-            raise TypeError('expecting SIPRequest')
-        request.transport = transport
-        transaction = Transaction.ClientTransaction(request, self.timers)
-        with self.newtranslock:
-            self.newtrans.append(transaction)
-        yield from transaction.responses()
-
-    def ingress(self, message):
-        # Processing one message from transport layer
-        #  o find the transaction that the message belongs to
-        #    and update transaction state with the message
-        #  o if no existing transaction match:
-        #     * if it is a request, create a new server transaction
-        #     * if it is a 200-OK to an INVITE and the dialog exists, reply with an ACK
-        # Execution context = Transport thread
-        transaction = self.dispatchmessage(message)
+    def transporterror(self, err, addr, message):
+        idc = Transaction.clientidentifier(message)
+        with self.lock:
+            transaction = self.clienttransactions.get(idc)
+        if not transaction:
+            ids = Transaction.serveridentifier(message)
+            with self.lock:
+                transaction = self.servertransactions.get(ids)
         if transaction:
-            terminated = transaction.messageinput(message)
-            if terminated:
-                self.transactions.remove(transaction)
-        else:
-            if isinstance(message, Message.SIPRequest):
-                transaction = Transaction.ServerTransaction(message, self.timers)
-                self.transactions.add(transaction)
-                transaction.start()
-            elif message.code == 200 and self.dialogxxx:
-                self.message.ack().send()
-                self.dialog.confirm()
-    def dispatchmessage(self, message):
-        if isinstance(message, Message.SIPResponse):
-            for transaction in (transaction for transaction in self.transactions if isinstance(transaction, Transaction.ClientTransaction)):
-                if transaction.match(message):
-                    return transaction
-        elif isinstance(message, Message.SIPRequest):
-            for transaction in (transaction for transaction in self.transactions if isinstance(transaction, Transaction.ServerTransaction)):
-                if transaction.match(message):
-                    return transaction
-        return None
-        
-    # Thread loop
+            transaction.error(message)
+    def newservertransaction(self, request):
+        with self.lock:
+            transaction = Transaction.ServerTransaction(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
+            self.servertransactions[transaction.id] = transaction
+    def newclienttransaction(self, request, addr):
+        with self.lock:
+            transaction = Transaction.ClientTransaction(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+            self.clienttransactions[transaction.id] = transaction
+            return transaction
     def run(self):
         while True:
-            time.sleep(0.2)
-            
-            with self.newtranslock:
-                while self.newtrans:
-                    # Processing new client transactions
-                    somethinghappened = True
-                    transaction = self.newtrans.pop(0)
-                    self.transactions.add(transaction)
-                    transaction.start()
+            message = self.transport.recv()
+            if isinstance(message, Message.SIPResponse):
+                id = Transaction.clientidentifier(message)
+                with self.lock:
+                    transaction = self.clienttransactions.get(id)
+                if transaction:
+                    transaction.response(message)
+            elif isinstance(message, Message.SIPRequest):
+                id = Transaction.serveridentifier(message)
+                with self.lock:
+                    transaction = self.servertransactions.get(id)
+                if transaction:
+                    transaction.request(message)
+                else:
+                    self.newservertransaction(message)
+                
         
+
+class SIPPhone(UA):
+    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, T1=.5, T2=4., T4=5.):
+        UA.__init__(self, transport, T1, T2, T4)
+        self.proxy = proxy
+        self.uri = uri
+        self.addressofrecord = addressofrecord
+        self.credentials = credentials
+        self.registration =  []
+        contacturi = SIPBNF.URI(uri)
+        contacturi.host = transport.listenip
+        contacturi.port = transport.listenport
+        self.reg = Message.REGISTER(self.uri,
+                                    'From: {}'.format(self.addressofrecord),
+                                    'To: {}'.format(self.addressofrecord),
+                                    'Contact: {}'.format(contacturi))
+
+    def authenticate(self, message, addr):
+        message.newbranch()
+        message.getheader('CSeq').seq += 1
+        transaction = self.newclienttransaction(message, addr)
+        ret = transaction.wait()
+        if ret in (401, 407):
+            message.addauthorization(transaction.finalresponse, **self.credentials)
+            message.newbranch()
+            transaction = self.newclienttransaction(message, addr)
+            ret = transaction.wait()
+        return transaction.finalresponse
     
-class SIPphone(UA):
-    def __init__(self, transport=Transport.DEFAULT, proxy=None, uri=None, credentials=None):
-        UA.__init__(self, transport)
+    def register(self, expires=3600):
+        self.reg.removeheader('Expires')
+        self.reg.addheaders('Expires: {}'.format(expires))
+        finalresponse = self.authenticate(self.reg, self.proxy)
+        if finalresponse and finalresponse.familycode == 2:
+            expiresheader = finalresponse.getheader('Expires')
+            if expiresheader:
+                expires = expiresheader.delta
+            contactheader = finalresponse.getheader('Contact')
+            if contactheader:
+                expires = contactheader.params.get('expires')
+            print(expires)
+                
+            #self.registration ...
+            return True
+        return False
 
-    Registration = collections.namedtuple('Registration', "ok responses")
-    def register(self, expire, headers={}, body={}):
-        request = Message.REGISTER(expire=expire, headers, body)
-        responses = list(self.newtransaction(request))
-        finalresp = responses[-1]
-        if isinstance(finalresp, Message.SIPResponse) and finalresp.code in (401, 407):
-            request = finalresp.authenticate()
-            responses = list(self.newtransaction(request))
-            finalresp = responses[-1]
-        ok = isinstance(finalresp, Message.SIPResponse) and finalresp.familycode == 2
-        return SIPphone.Registration(ok, responses)
-
-        
-#        if not responses:
-#            raise Exception("REGISTER transaction ends up with no response")
-#        if isinstance(responses[-1], Message.SIPResponse):
-#            familycode = responses[-1].familycode
-#            if familycode in (0, 1) of familycode >= 7:
-#                raise Exception("REGISTER transaction ends up without final response")
-#                    pass
-#                elif familycode == 2:
-#                    pass
-#                elif familycode == 3:
-#                    pass
-#                elif familycode == 4:
-#                    pass
-#                elif familycode == 5:
-#                    pass
-#                elif familycode == 6:
-#                    pass
-                    
-
-    def invite(self, sipuri, timeout):#-> dialog
-        pass
+    def invite(self, sipuri, timeout):
+        invite = Message.INVITE()
+        ok, finalresponse = self.authenticate(invite)
+        if ok:
+            #self.dialog ...
+            pass
+        return ok
 
     def bye(self, dialog):
         pass
@@ -124,71 +122,60 @@ class SIPphone(UA):
     def options(self, uri):
         pass
 
+    def subscribe(self, contact):
+        pass
 
-
-if __name__ == '__main__':
-    phone = SIPphone(proxy='194.2.137.40', uri='sip:+33900821220@osk.nokims.eu', credentials={'username':'+33900821220@osk.nokims.eu', 'password'='nsnims2008'})
-    registration = phone.register(3000, headers={})
-    if registration.ok:
-        call = phone.invite('+33900821221@osk.nokims.eu', timeout=5, headers={}, body=SDP())
-        if call.ok:
-            call.playfile(xxx)
-            call.recordfile(xxx)
-            sleep(15)
-            call.stop()
-        phone.register(0, headers={})
-
-
-#    handler = phone.handleinvite()
-#    phone.send()
+    def invitationreceived(self, contact, sdp):
+        return sdp or None
     
-#    handler = phone.handle('NOTIFY')
-#    phone.send(SUBSCRIBE())
-#ou
-#    subscription = phone.subscribe(headers={})
+    def invited(self, sipuri, sdp):
+        pass
 
-        
-
+    def notified(self, xxx):
+        pass
 
 
 
+    
+if __name__ == '__main__':
+    import logging.config
+    LOGGING = {
+        'version': 1,
+        'formatters': {
+            'simple': {
+                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
+            }
+        },
+        'handlers': {
+            'console': {
+                'class': 'logging.StreamHandler',
+                'formatter': 'simple',
+            }
+        },
+        'loggers': {
+            'UA': {
+                'level': 'INFO'
+            },
+            'Transaction': {
+                'level': 'INFO'
+            },
+            'Transport': {
+                'level': 'ERROR'
+            },
+            'Message': {
+                'level': 'DEBUG'
+            }
+        },
+        'root': {
+            'handlers': ['console']
+        }
+    }
+    logging.config.dictConfig(LOGGING)
 
-        
-#class User:
-#    def __init__(self, sipuri, password=None, invitecb=None):
-#        self.sipuri = sipuri
-#        self.password = password
-#        self.invitecb = invitecb
-#        self.registered = False
-#        
-#    def register(self, cb=None):
-#        reg = Message.REGISTER(self.sipuri)
-#        m = Transaction.manager.send(reg)
-#        if m.code == 401:
-#            reg.authenticate(m.headers['WWW-Authenticate'], self.password)
-#            m = Transaction.manager.send(reg)
-#        elif m.code == 407:
-#            reg.authenticate(m.headers['Proxy-Authenticate'], self.password)
-#            m = Transaction.manager.send(reg)
-#
-#        if m.code == 200:
-#            self.registered = True
-#            return self
-#
-#        raise Exception(str(m))
-#        
-#    async def invite(self, to, sdp, audioin, audioout):
-#        inv = Message.INVITE()
-#        m = await Transaction.manager.send(reg)
-#        if m.code == 401:
-#            reg.authenticate(m.headers['WWW-Authenticate'], self.password)
-#            m = await Transaction.manager.send(reg)
-#        elif m.code == 407:
-#            reg.authenticate(m.headers['Proxy-Authenticate'], self.password)
-#            m = await Transaction.manager.send(reg)
-#
-#        if m.code == 200:
-#            self.registered = True
-#            return self
-#
-#        raise Exception(str(m))
+    transport = Transport.Transport(Transport.get_ip_address('eno1'))
+    phone = SIPPhone(transport, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821220@osk.nokims.eu', credentials=dict(username='+33900821220@osk.nokims.eu', password='nsnims2008'))
+    ret = phone.register()
+    ret = phone.register(0)
+    import time
+    time.sleep(10)
+    ret = phone.register()

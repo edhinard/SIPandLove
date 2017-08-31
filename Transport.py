@@ -11,7 +11,6 @@ import socket
 import fcntl
 import struct
 import logging
-
 log = logging.getLogger('Transport')
 
 from . import Message

@@ -5,10 +5,10 @@ import sys
 import threading
 import time
 import logging
+log = logging.getLogger('Transaction')
 
 from . import Message
-
-log = logging.getLogger('Transaction')
+from . import Timer
 
 def clientidentifier(request):
     return (request.branch, request.getheader('CSeq').method)
@@ -21,19 +21,18 @@ def serveridentifier(request):
     return (request.branch, sentby, request.getheader('CSeq').method)
 
 class Transaction:
-    def __init__(self, request, transport, addr, timermanager, T1, T2, T4):
+    def __init__(self, request, transport, addr, T1, T2, T4):
         self.id = self.identifier(request)
         self.request = request
         self.transport = transport
         self.addr = addr
-        self.timermanager = timermanager
         self.T1 = T1
         self.T2 = T2
         self.T4 = T4
         self.lock = threading.Lock()
         self.events = []
+        self.finalresponse = None
         self._final = threading.Event()
-        self._terminated = threading.Event()
         with self.lock:
             self.init()
         log.info("%s <-- New transaction", self)
@@ -46,20 +45,21 @@ class Transaction:
     def _setfinal(self, v):
         if v:
             self._final.set()
+            if self.events:
+                self.finalresponse = self.events[-1]
         else:
             self._final.clear()
     final = property(_getfinal, _setfinal)
     
-    def wait(self, what='final'):
-        if what == 'final':
-            self._final.wait()
-        elif what == 'terminated':
-            self._terminated.wait()
+    def wait(self):
+        self._final.wait()
+        if self.finalresponse:
+            return self.finalresponse.code
         if self.events:
             return self.events[-1]
 
     def armtimer(self, name, duration):
-        self.timermanager.arm(duration, self.timer, name, self.state)
+        Timer.arm(duration, self.timer, name, self.state)
 
     def response(self, response):
         with self.lock:
@@ -71,8 +71,6 @@ class Transaction:
                 eventcb()
                 if self.state != state:
                     log.info(self)
-                if self.state == 'Terminated':
-                    self._terminated.set()
 
     def error(self, message):
             eventcb = getattr(self, '{}_Error'.format(self.state), None)
@@ -81,16 +79,12 @@ class Transaction:
                 self.events.append('transport error')
                 eventcb()
                 log.info(self)
-                if self.state == 'Terminated':
-                    self._terminated.set()
 
     def request(self, request):
         with self.lock:
             eventcb = getattr(self, '{}_Request'.format(self.state), None)
             if eventcb:
                 eventcb()
-                if self.state == 'Terminated':
-                    self._terminated.set()
 
     def timer(self, name, state):
         with self.lock:
@@ -101,8 +95,6 @@ class Transaction:
                     eventcb()
                     if self.state != state:
                         log.info(self)
-                    if self.state == 'Terminated':
-                        self._terminated.set()
 
                 
 def ClientTransaction(request, *args, **kwargs):
@@ -258,7 +250,6 @@ if __name__ == '__main__':
             threading.Thread.__init__(self, daemon=True)
             Transport.errorcb = self.transporterror
             self.transport = Transport.Transport(Transport.get_ip_address('eno1'), listenport=5061)
-            self.timermanager = Timer.TimerManager()
             self.transactions = {}
             self.start()
         def transporterror(self, err, addr, message):
@@ -275,7 +266,7 @@ if __name__ == '__main__':
                     transaction.response(message)
         def newtransaction(self, request, addr):
             id = clientidentifier(request)
-            transaction = ClientTransaction(request, self.transport, addr, self.timermanager, T1=.5, T2=1., T4=1.)
+            transaction = ClientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
             self.transactions[id] = transaction
             return transaction
 
@@ -290,6 +281,5 @@ if __name__ == '__main__':
     transaction2 = ua.newtransaction(req2, '194.2.137.40')
     print(transaction1.wait())
     print(transaction2.wait())
-    transaction1.wait('terminated')
-    transaction2.wait('terminated')
+    time.sleep(5)
     
