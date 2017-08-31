@@ -20,14 +20,6 @@ from . import Header
 
 errorcb = None
 
-
-# s = socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP)
-#  s.setsockopt(socket.SOL_IP, socket.IP_HDRINCL, 1)
-#  while 1:
-#    data, addr = s.recvfrom(1508)
-#    print "Packet from %r: %r" % (addr,data)
-
-
 # http://code.activestate.com/recipes/439094
 def get_ip_address(ifname):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -149,7 +141,6 @@ class Transport(multiprocessing.Process):
                 elif obj == udp:
                     packet,remoteaddr = udp.recvfrom(65536)
                     decodeinfo = Message.SIPMessage.predecode(packet)
-
                     # Discard inconsistent messages
                     if decodeinfo.status != 'OK':
                         continue
@@ -301,19 +292,21 @@ class ErrorListener(threading.Thread):
                 dstip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+16)))
                 dstport, = struct.unpack_from('!H', packet, 20+8+20+2)
                 message = Message.SIPMessage.frombytes(message)
-                log.info("<-- ERR/%s:%d %s\n%s-", dstip, dstport, err, message)
-                if errorcb:
-                    with ErrorListener.lock:
-                        errorcb(err, (dstip,dstport), message)
+                if message:
+                    log.info("<-- ERR/%s:%d %s\n%s-", dstip, dstport, err, message)
+                    if errorcb:
+                        with ErrorListener.lock:
+                            errorcb(err, (dstip,dstport), message)
 
             # Unqueue error from the pipe and call error callback
             elif self.pipeout == ready:
                 err,addr,message = self.pipeout.recv()
                 message = Message.SIPMessage.frombytes(message)
-                log.info("<-- ERR/%s:%d %s\n%s-", *addr, err, message)
-                if errorcb:
-                    with ErrorListener.lock:
-                        errorcb(err, addr, message)
+                if message:
+                    log.info("<-- ERR/%s:%d %s\n%s-", *addr, err, message)
+                    if errorcb:
+                        with ErrorListener.lock:
+                            errorcb(err, addr, message)
 
 
 if __name__ == '__main__':
@@ -322,19 +315,18 @@ if __name__ == '__main__':
         'version': 1,
         'formatters': {
             'simple': {
-                'format': "%(asctime)s %(name)s %(levelname)s %(message)s"
+                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
             }
         },
         'handlers': {
             'console': {
                 'class': 'logging.StreamHandler',
                 'formatter': 'simple',
-                'level': 'INFO'
             }
         },
         'loggers': {
             'Transport': {
-                'level': 'INFO'
+                'level': 'DEBUG'
             }
         },
         'root': {
