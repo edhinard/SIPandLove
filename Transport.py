@@ -7,13 +7,15 @@ import threading
 import multiprocessing
 import multiprocessing.connection
 import time
-
-from . import Message
-from . import Header
-
 import socket
 import fcntl
 import struct
+import logging
+
+log = logging.getLogger('Transport')
+
+from . import Message
+from . import Header
 
 
 errorcb = None
@@ -93,9 +95,10 @@ class Transport(multiprocessing.Process):
         if protocol == 'TCP' or len(message.body) and not message.getheader('l'):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
+        log.info("--> %s/%s:%d\n%s-", protocol, ip, port, message)
         self.pipe.send((protocol, (ip, port), message.tobytes()))
 
-    def recv(self, timeout=0.0):
+    def recv(self, timeout=None):
         if self.pipe.poll(timeout):
             protocol,(ip,port),message = self.pipe.recv()
             message = Message.SIPMessage.frombytes(message)
@@ -108,6 +111,7 @@ class Transport(multiprocessing.Process):
                         if via.params.has_key('rport'):
                             via.params['received'] = ip
                             via.params['rport'] = port
+                log.info("<-- %s/%s:%d\n%s-", protocol, ip, port, message)
                 return message
         return None
                 
@@ -133,12 +137,8 @@ class Transport(multiprocessing.Process):
                         elif protocol == 'UDP':
                             udp.sendto(packet, remoteaddr)
                         err = None
-                    except OSError as e:
-                        err = e.strerror
                     except Exception as e:
-                        err = str(e)
-                    if err is not None:
-                        self.error.pipein.send((err, remoteaddr, packet))
+                        self.error.pipein.send((str(e), remoteaddr, packet))
                         continue
 
                 # Incomming TCP connection --> new socket added (will be read in the next result of poll)
@@ -151,9 +151,9 @@ class Transport(multiprocessing.Process):
                     decodeinfo = Message.SIPMessage.predecode(packet)
 
                     # Discard inconsistent messages
-                    if not decodeinfo.status != 'OK':
+                    if decodeinfo.status != 'OK':
                         continue
-                        
+                    
                     self.childpipe.send(('UDP',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
 
                 # Incomming TCP buffer --> assemble with previous buffer(done by ServiceSocket class), decode and send to upper layer
@@ -199,6 +199,7 @@ class ServiceSockets:
     def sendto(self, packet, addr):
         if addr not in self.byaddr:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(.5)
             sock.connect(addr)
             self.add(sock, addr)
         sock,addr,buf,lasttime = self.byaddr[addr]
@@ -236,7 +237,7 @@ class ErrorListener(threading.Thread):
     lock = threading.Lock()
 
     @staticmethod
-    def neswlistener(ip):
+    def newlistener(ip):
         with ErrorListener.lock:
             if not ip in ErrorListener.listeners:
                 ErrorListener.listeners[ip] = ErrorListener(ip)
@@ -244,15 +245,23 @@ class ErrorListener(threading.Thread):
     
     def __init__(self, ip):
         self.pipeout,self.pipein = multiprocessing.Pipe(duplex=False)
-        self.rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
-        self.rawsock.bind((ip,0))
+        try:
+            self.rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
+            self.rawsock.bind((ip,0))
+        except:
+            self.rawsock = None
+            log.warning("Cannot open raw socket for ICMP. Administrator privilege needed to do so")
         threading.Thread.__init__(self, daemon=True)
         self.start()
         
     def run(self):
         global errorcb
+        if self.rawsock:
+            waitto = (self.rawsock,self.pipeout)
+        else:
+            waitto = (self.pipeout,)
         while True:
-            ready = multiprocessing.connection.wait((self.rawsock,self.pipeout))[0]
+            ready = multiprocessing.connection.wait(waitto)[0]
 
             # Partially parse ICMP packet received on raw socket and call error callback
             #  -check it is a type,code combination that should be transmitted to TU
@@ -291,30 +300,54 @@ class ErrorListener(threading.Thread):
                     continue
                 dstip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+16)))
                 dstport, = struct.unpack_from('!H', packet, 20+8+20+2)
+                message = Message.SIPMessage.frombytes(message)
+                log.info("<-- ERR/%s:%d %s\n%s-", dstip, dstport, err, message)
                 if errorcb:
-                    message = Message.SIPMessage.frombytes(message)
                     with ErrorListener.lock:
                         errorcb(err, (dstip,dstport), message)
 
             # Unqueue error from the pipe and call error callback
             elif self.pipeout == ready:
                 err,addr,message = self.pipeout.recv()
+                message = Message.SIPMessage.frombytes(message)
+                log.info("<-- ERR/%s:%d %s\n%s-", *addr, err, message)
                 if errorcb:
-                    message = Message.SIPMessage.frombytes(message)
                     with ErrorListener.lock:
                         errorcb(err, addr, message)
 
 
 if __name__ == '__main__':
-    def e(err, addr, message):
-        print(repr(err),addr,'\n',message)
-    errorcb = e
+    import logging.config
+    LOGGING = {
+        'version': 1,
+        'formatters': {
+            'simple': {
+                'format': "%(asctime)s %(name)s %(levelname)s %(message)s"
+            }
+        },
+        'handlers': {
+            'console': {
+                'class': 'logging.StreamHandler',
+                'formatter': 'simple',
+                'level': 'INFO'
+            }
+        },
+        'loggers': {
+            'Transport': {
+                'level': 'INFO'
+            }
+        },
+        'root': {
+            'handlers': ['console']
+        }
+    }
+    logging.config.dictConfig(LOGGING)
     t = Transport(get_ip_address('eno1'), listenport=5061, tcp_only=True)
     t.send(Message.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu'),
-           '194.2.137.40'
+           ('194.2.137.40',5060)
     )
     t.send(Message.REGISTER('sip:osk.nkims.eu'), '127.0.0.1')
-    print(t.recv(3))
-    print(t.recv(3))
+    t.recv(3)
+    t.recv(3)
