@@ -1077,10 +1077,10 @@ ViaMultiple = True
 def ViaDisplay(via):
     params = (";{}{}".format(k, ("={}".format(v) if v is not None else "") or "") for k,v in via.params.items())
     if via.port:
-        hostport = "{}:{}".format(via.host, via.port)
+        sentby = "{}:{}".format(via.host, via.port)
     else:
-        hostport = via.host
-    return "SIP/2.0/{} {}{}".format(via.protocol, hostport, ''.join(params))
+        sentby = via.host
+    return "SIP/2.0/{} {}{}".format(via.protocol, sentby, ''.join(params))
 
 #
 #Warning        =  "Warning" HCOLON warning-value *(COMMA warning-value)
