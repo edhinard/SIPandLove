@@ -221,7 +221,7 @@ class SIPResponse(SIPMessage):
 class RequestMeta(type):
     @staticmethod
     def __prepare__(name, bases, **dikt):
-        return dict(method=name)
+        return dict(method=name, METHOD=name.upper())
     def __init__(cls, name, bases, dikt):
         if name != 'SIPRequest':
             SIPRequest.SIPrequestclasses[name] = cls
@@ -240,6 +240,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                 raise ValueError("{!r} is not a valid Request-URI".format(uri))
         if method is not None:
            self.method = method
+           self.METHOD = method.upper()
 
         if not self.getheader('v'):
             self.addheaders(Header.Via(protocol='???',

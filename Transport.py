@@ -99,7 +99,7 @@ class Transport(multiprocessing.Process):
                     if via:
                         if via.host != ip:
                             via.params['received'] = ip
-                        if via.params.has_key('rport'):
+                        if 'rport' in via.params:
                             via.params['received'] = ip
                             via.params['rport'] = port
                 log.info("<-- %s/%s:%d\n%s-", protocol, ip, port, message)
