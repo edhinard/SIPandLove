@@ -83,7 +83,7 @@ class Transport(multiprocessing.Process):
                 else:
                     port = via.params.get('rport', via.port) or 5060
 
-        if protocol == 'TCP' or len(message.body) and not message.getheader('l'):
+        if (protocol == 'TCP' or len(message.body)) and not message.getheader('l'):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
         log.info("--> %s/%s:%d\n%s-", protocol, ip, port, message)

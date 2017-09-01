@@ -45,7 +45,7 @@ class Transaction:
     def _setfinal(self, v):
         if v:
             self._final.set()
-            if self.events:
+            if self.events and isinstance(self.events[-1], Message.SIPResponse):
                 self.finalresponse = self.events[-1]
         else:
             self._final.clear()
@@ -92,6 +92,8 @@ class Transaction:
                 eventcb = getattr(self, '{}_Timer{}'.format(self.state, name), None)
                 if eventcb:
                     log.info("%s <-- Timer %s", self, name)
+                    if name in ('B', 'F', 'H'):
+                        self.events.append('time out')
                     eventcb()
                     if self.state != state:
                         log.info(self)
@@ -124,7 +126,6 @@ class NonINVITEclientTransaction(Transaction):
         self.armtimer('E', self.Eduration)
         
     def Trying_TimerF(self):
-        self.events.append('time out')
         self.state = 'Terminated'
         self.final = True
     Trying_Error = Trying_TimerF
@@ -145,7 +146,6 @@ class NonINVITEclientTransaction(Transaction):
         self.armtimer('E', self.T2)
         
     def Proceeding_TimerF(self):
-        self.events.append('time out')
         self.state = 'Terminated'
         self.final = True
     Proceeding_Error = Proceeding_TimerF
@@ -161,6 +161,7 @@ class NonINVITEclientTransaction(Transaction):
 
     def Completed_TimerK(self):
         self.state = 'Terminated'
+        self.final = True
 
 class INVITEclientTransaction(Transaction):
     identifier = staticmethod(clientidentifier)
@@ -179,17 +180,21 @@ class INVITEclientTransaction(Transaction):
         
     def Calling_TimerB(self):
         self.state = 'Terminated'
+        self.final = True
+    Calling_Error = Calling_TimerB
 
     def Calling_1xx(self):
         self.state = 'Proceeding'
 
     def Calling_2xx(self):
         self.state = 'Terminated'
+        self.final = True
         
     def Calling_3456(self):
-        self.transport.send(ack, self.addr)
+        self.transport.send(self.request.ack(self.events[-1]), self.addr)
         self.state = 'Completed'
         self.armtimer('D', 32)
+        self.final = True
     Calling_3xx = Calling_4xx = Calling_5xx = Calling_6xx = Calling_3456
         
     def Proceeding_1xx(self):
@@ -197,21 +202,26 @@ class INVITEclientTransaction(Transaction):
         
     def Proceeding_2xx(self):
         self.state = 'Terminated'
+        self.final = True
         
     def Proceeding_3456(self):
-        self.transport.send(ack)
+        self.transport.send(self.request.ack(self.events[-1]), self.addr)
         self.armtimer('D', 32)
         self.state = 'Completed'
+        self.final = True
     Proceeding_3xx = Proceeding_4xx = Proceeding_5xx = Proceeding_6xx = Proceeding_3456
 
     def Completed_3456(self):
-        self.transport.send(ack, self.addr)
+        self.transport.send(self.request.ack(self.events[-1]), self.addr)
     Completed_3xx = Completed_4xx = Completed_5xx = Completed_6xx = Completed_3456
 
     def Completed_TimerD(self):
         self.state = 'Terminated'
-
-
+        self.final = True
+        
+    def Calling_Error(self):
+        self.state = 'Terminated'
+        self.final = True
 
 if __name__ == '__main__':
     from . import Transport

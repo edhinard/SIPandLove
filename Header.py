@@ -2,6 +2,8 @@
 
 import re
 import copy
+import logging
+log = logging.getLogger('Header')
 
 from . import SIPBNF
 

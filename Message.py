@@ -3,7 +3,6 @@
 import re
 import base64
 import hashlib
-import logging
 import copy
 import random
 import string
@@ -345,7 +344,8 @@ class INVITE(SIPRequest):
     def ack(self, response):
         if response.familycode == 1:
             raise ValueError("cannot build an ACK from a 1xx response")
-        ack = ACK(self.uri, *self.getheaders('from', 'cseq', 'call-id', 'via'), self.getheader('to'))
+        ack = ACK(self.uri, *self.getheaders('from', 'cseq', 'call-id', 'via'), response.getheader('to'))
+        ack.getheader('CSeq').method = 'ACK'
         return ack
 
 class ACK(SIPRequest):
@@ -374,4 +374,3 @@ if __name__ == '__main__':
                            password='nsnims2008')
     print(resp)
     assert resp == 'afc145874b3545922d46de9ecf55ed8e'
-

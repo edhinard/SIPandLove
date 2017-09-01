@@ -709,6 +709,8 @@ def ContactParse(headervalue):
             if par and par[0] == '=':
                 par.pop(0)
                 v = unquote(par.pop(0))
+                if k.lower() == 'expires':
+                    v = int(v)
                 params[k] = v
             else:
                 params[k] = None

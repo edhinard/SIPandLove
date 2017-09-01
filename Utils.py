@@ -15,6 +15,7 @@ NONTOKENCHARS_RE=re.compile('[] \t"#$&(),/:;<=>?@[\\^{|}]')
 def quote(string,forcequote=False):
     if string is None:
         return None
+    string = str(string)
     quotealreadythere = False
     if string.startswith('"') and string.endswith('"'):
         quotealreadythere = True

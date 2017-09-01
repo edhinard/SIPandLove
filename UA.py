@@ -71,13 +71,15 @@ class SIPPhone(UA):
         self.addressofrecord = addressofrecord
         self.credentials = credentials
         self.registration =  []
-        contacturi = SIPBNF.URI(uri)
-        contacturi.host = transport.listenip
-        contacturi.port = transport.listenport
+        self.contacturi = SIPBNF.URI(self.addressofrecord)
+        self.contacturi.host = transport.listenip
+        self.contacturi.port = transport.listenport
         self.reg = Message.REGISTER(self.uri,
                                     'From: {}'.format(self.addressofrecord),
                                     'To: {}'.format(self.addressofrecord),
-                                    'Contact: {}'.format(contacturi))
+                                    'Contact: {}'.format(self.contacturi))
+    def __str__(self):
+        return str(self.contacturi)
 
     def authenticate(self, message, addr):
         message.newbranch()
@@ -85,16 +87,21 @@ class SIPPhone(UA):
         transaction = self.newclienttransaction(message, addr)
         ret = transaction.wait()
         if ret in (401, 407):
+            log.info("%s needs authentication", message.method)
             message.addauthorization(transaction.finalresponse, **self.credentials)
             message.newbranch()
             transaction = self.newclienttransaction(message, addr)
             ret = transaction.wait()
-        return transaction.finalresponse
+        return ret, transaction.finalresponse
     
     def register(self, expires=3600):
+        if expires > 0:
+            log.info("%s registering for %ds", self, expires)
+        else:
+            log.info("%s unregistering", self)
         self.reg.removeheader('Expires')
         self.reg.addheaders('Expires: {}'.format(expires))
-        finalresponse = self.authenticate(self.reg, self.proxy)
+        code, finalresponse = self.authenticate(self.reg, self.proxy)
         if finalresponse and finalresponse.familycode == 2:
             expiresheader = finalresponse.getheader('Expires')
             if expiresheader:
@@ -102,19 +109,34 @@ class SIPPhone(UA):
             contactheader = finalresponse.getheader('Contact')
             if contactheader:
                 expires = contactheader.params.get('expires')
-            print(expires)
-                
+            if expires > 0:
+                log.info("%s registered for %ds", self, expires)
+            else:
+                log.info("%s unregistered", self)
             #self.registration ...
+        else:
+            if finalresponse:
+                log.info("%s (un)registering failed: %d %s", self, finalresponse.code, finalresponse.reason)
+            else:
+                log.info("%s (un)registering failed: %s", self, code)
             return True
         return False
 
-    def invite(self, sipuri, timeout):
-        invite = Message.INVITE()
-        ok, finalresponse = self.authenticate(invite)
-        if ok:
-            #self.dialog ...
-            pass
-        return ok
+    def invite(self, touri):
+        log.info("%s inviting %s", self, touri)
+        invite = Message.INVITE(self.uri,
+                                'From: {}'.format(self.addressofrecord),
+                                'To: {}'.format(touri),
+                                'Contact: {}'.format(self.contacturi))
+        code, finalresponse = self.authenticate(invite, self.proxy)
+        if finalresponse and finalresponse.familycode == 2:
+            log.info("invite ok")
+        else:
+            if finalresponse:
+                log.info("%s inviting failed: %d %s", self, finalresponse.code, finalresponse.reason)
+            else:
+                log.info("%s inviting failed: %s", self, code)
+            
 
     def bye(self, dialog):
         pass
@@ -157,13 +179,16 @@ if __name__ == '__main__':
                 'level': 'INFO'
             },
             'Transaction': {
-                'level': 'INFO'
+                'level': 'ERROR'
             },
             'Transport': {
                 'level': 'ERROR'
             },
             'Message': {
-                'level': 'DEBUG'
+                'level': 'ERROR'
+            },
+            'Header': {
+                'level': 'ERROR'
             }
         },
         'root': {
@@ -175,7 +200,11 @@ if __name__ == '__main__':
     transport = Transport.Transport(Transport.get_ip_address('eno1'))
     phone = SIPPhone(transport, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821220@osk.nokims.eu', credentials=dict(username='+33900821220@osk.nokims.eu', password='nsnims2008'))
     ret = phone.register()
+
+    transport2 = Transport.Transport(Transport.get_ip_address('eno1'), 5070)
+    phone2 = SIPPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
+    ret = phone2.register()
+
+    
+    ret = phone.invite('sip:+33900821221@osk.nokims.eu')
     ret = phone.register(0)
-    import time
-    time.sleep(10)
-    ret = phone.register()
