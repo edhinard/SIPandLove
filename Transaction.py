@@ -45,7 +45,7 @@ class Transaction:
         self.T2 = T2
         self.T4 = T4
         self.lock = threading.Lock()
-        self.events = []
+        self.lastrequest = self.lastresponse = self.lastevent = None
         self.finalresponse = None
         self._final = threading.Event()
         with self.lock:
@@ -60,51 +60,48 @@ class Transaction:
     def _setfinal(self, v):
         if v:
             self._final.set()
-            if self.events and isinstance(self.events[-1], Message.SIPResponse):
-                self.finalresponse = self.events[-1]
+            if self.lastevent == self.lastresponse:
+                self.finalresponse = self.lastresponse
         else:
             self._final.clear()
     final = property(_getfinal, _setfinal)
     
     def wait(self):
         self._final.wait()
-        if self.finalresponse:
-            return self.finalresponse.code
-        if self.events:
-            return self.events[-1]
 
     def armtimer(self, name, duration):
         Timer.arm(duration, self.eventtimer, name, self.state)
 
-    def eventresponse(self, response):
+    def eventmessage(self, message):
         with self.lock:
-            eventcb = getattr(self, '{}_{}xx'.format(self.state, response.familycode), None)
+            response = request = None
+            if isinstance(message, Message.SIPResponse):
+                response = message
+                eventcb = getattr(self, '{}_{}xx'.format(self.state, response.familycode), None)
+            else:
+                request = message
+                eventcb = getattr(self, '{}_Request'.format(self.state), None)
             if eventcb:
                 state = self.state
-                log.info("%s <-- Response %s %s", self, response.code, response.reason)
-                self.events.append(response)
+                if response:
+                    log.info("%s <-- Response %s %s", self, message.code, message.reason)
+                    self.lastresponse = response
+                if request:
+                    log.info("%s <-- %s", self, request.METHOD)
+                    self.lastrequest = request
+                self.lastevent = message
                 eventcb()
                 if self.state != state:
                     log.info(self)
 
     def eventerror(self, message):
+        with self.lock:
             eventcb = getattr(self, '{}_Error'.format(self.state), None)
             if eventcb:
                 log.info("%s <-- Transport error", self)
-                self.events.append('transport error')
+                self.lastevent = 'transport error'
                 eventcb()
                 log.info(self)
-
-    def eventrequest(self, request):
-        with self.lock:
-            eventcb = getattr(self, '{}_Request'.format(self.state), None)
-            if eventcb:
-                state = self.state
-                log.info("%s <-- %s", self, request.METHOD)
-                self.lastrequest = request
-                eventcb()
-                if self.state != state:
-                    log.info(self)
 
     def eventtimer(self, name, state):
         with self.lock:
@@ -113,24 +110,51 @@ class Transaction:
                 if eventcb:
                     log.info("%s <-- Timer %s", self, name)
                     if name in ('B', 'F', 'H'):
-                        self.events.append('time out')
+                        self.lastevent = 'time out'
                     eventcb()
                     if self.state != state:
                         log.info(self)
 
-                
-def ClientTransaction(request, *args, **kwargs):
-    if isinstance(request, Message.INVITE):
-        return INVITEclientTransaction(request, *args, **kwargs)
-    else:
-        return NonINVITEclientTransaction(request, *args, **kwargs)          
-def ServerTransaction(request, *args, **kwargs):
-    if isinstance(request, Message.INVITE):
-        return INVITEserverTransaction(request, *args, **kwargs)
-    else:
-        return NonINVITEserverTransaction(request, *args, **kwargs)
-
-
+#                               |INVITE from TU
+#             Timer A fires     |INVITE sent
+#             Reset A,          V                      Timer B fires
+#             INVITE sent +-----------+                or Transport Err.
+#               +---------|           |---------------+inform TU
+#               |         |  Calling  |               |
+#               +-------->|           |-------------->|
+#                         +-----------+ 2xx           |
+#                            |  |       2xx to TU     |
+#                            |  |1xx                  |
+#    300-699 +---------------+  |1xx to TU            |
+#   ACK sent |                  |                     |
+#resp. to TU |  1xx             V                     |
+#            |  1xx to TU  -----------+               |
+#            |  +---------|           |               |
+#            |  |         |Proceeding |-------------->|
+#            |  +-------->|           | 2xx           |
+#            |            +-----------+ 2xx to TU     |
+#            |       300-699    |                     |
+#            |       ACK sent,  |                     |
+#            |       resp. to TU|                     |
+#            |                  |                     |      NOTE:
+#            |  300-699         V                     |
+#            |  ACK sent  +-----------+Transport Err. |  transitions
+#            |  +---------|           |Inform TU      |  labeled with
+#            |  |         | Completed |-------------->|  the event
+#            |  +-------->|           |               |  over the action
+#            |            +-----------+               |  to take
+#            |              ^   |                     |
+#            |              |   | Timer D fires       |
+#            +--------------+   | -                   |
+#                               |                     |
+#                               V                     |
+#                         +-----------+               |
+#                         |           |               |
+#                         | Terminated|<--------------+
+#                         |           |
+#                         +-----------+
+#
+#                 Figure 5: INVITE client transaction
 class INVITEclientTransaction(Transaction):
     identifier = staticmethod(clientidentifier)
 
@@ -191,7 +215,78 @@ class INVITEclientTransaction(Transaction):
         self.state = 'Terminated'
         self.final = True
 
-        
+#                               |ACK from TU
+#                               |ACK sent
+#               2xx             V
+#               ACK sent  +-----------+
+#               +---------|           |------------------+
+#               |         |Proceeding | Timer B fires    |
+#               +-------->|           | or Transport Err.|
+#                         +-----------+                  |
+#                                                        |
+#                         +-----------+                  |
+#                         |           |                  |
+#                         | Terminated|<-----------------+
+#                         |           |
+#                         +-----------+
+class ACKclientTransaction(Transaction):
+    identifier = staticmethod(clientidentifier)
+
+    def init(self):
+        self.transport.send(self.request, self.addr)
+        self.state = 'Proceeding'
+        self.armtimer('B', 64*self.T1)
+
+    def Proceeding_TimerB(self):
+        self.state = 'Terminated'
+        self.final = True
+    Proceeding_Error = Proceeding_TimerB
+
+    def Proceeding_2xx(self):
+        self.transport.send(self.request, self.addr)
+
+#                                   |Request from TU
+#                                   |send request
+#               Timer E             V
+#               send request  +-----------+
+#                   +---------|           |-------------------+
+#                   |         |  Trying   |  Timer F          |
+#                   +-------->|           |  or Transport Err.|
+#                             +-----------+  inform TU        |
+#                200-699         |  |                         |
+#                resp. to TU     |  |1xx                      |
+#                +---------------+  |resp. to TU              |
+#                |                  |                         |
+#                |   Timer E        V       Timer F           |
+#                |   send req +-----------+ or Transport Err. |
+#                |  +---------|           | inform TU         |
+#                |  |         |Proceeding |------------------>|
+#                |  +-------->|           |-----+             |
+#                |            +-----------+     |1xx          |
+#                |              |      ^        |resp to TU   |
+#                | 200-699      |      +--------+             |
+#                | resp. to TU  |                             |
+#                |              |                             |
+#                |              V                             |
+#                |            +-----------+                   |
+#                |            |           |                   |
+#                |            | Completed |                   |
+#                |            |           |                   |
+#                |            +-----------+                   |
+#                |              ^   |                         |
+#                |              |   | Timer K                 |
+#                +--------------+   | -                       |
+#                                   |                         |
+#                                   V                         |
+#             NOTE:           +-----------+                   |
+#                             |           |                   |
+#         transitions         | Terminated|<------------------+
+#         labeled with        |           |
+#         the event           +-----------+
+#         over the action
+#         to take
+#
+#                 Figure 6: non-INVITE client transaction
 class NonINVITEclientTransaction(Transaction):
     identifier = staticmethod(clientidentifier)
 
@@ -245,37 +340,76 @@ class NonINVITEclientTransaction(Transaction):
         self.state = 'Terminated'
         self.final = True
 
-        
+#                               |INVITE
+#                               |pass INV to TU
+#            INVITE             V send 100 if TU won't in 200ms
+#            send response+-----------+
+#                +--------|           |--------+101-199 from TU
+#                |        | Proceeding|        |send response
+#                +------->|           |<-------+
+#                         |           |          Transport Err.
+#                         |           |          Inform TU
+#                         |           |--------------->+
+#                         +-----------+                |
+#            300-699 from TU |     |2xx from TU        |
+#            send response   |     |send response      |
+#                            |     +------------------>+
+#                            |                         |
+#            INVITE          V          Timer G fires  |
+#            send response+-----------+ send response  |
+#                +--------|           |--------+       |
+#                |        | Completed |        |       |
+#                +------->|           |<-------+       |
+#                         +-----------+                |
+#                            |     |                   |
+#                        ACK |     |                   |
+#                        -   |     +------------------>+
+#                            |        Timer H fires    |
+#                            V        or Transport Err.|
+#                         +-----------+  Inform TU     |
+#                         |           |                |
+#                         | Confirmed |                |
+#                         |           |                |
+#                         +-----------+                |
+#                               |                      |
+#                               |Timer I fires         |
+#                               |-                     |
+#                               |                      |
+#                               V                      |
+#                         +-----------+                |
+#                         |           |                |
+#                         | Terminated|<---------------+
+#                         |           |
+#                         +-----------+
+#
+#              Figure 7: INVITE server transaction
 class INVITEserverTransaction(Transaction):
     identifier = staticmethod(serveridentifier)
 
     def init(self):
-        self.response = self.request.response(100)
+        self.lastresponse = self.request.response(100)
         self.state = 'Proceeding'
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
 
     def Proceeding_Request(self):
         if self.lastrequest.METHOD == 'INVITE':
-            self.transport.send(self.response)
+            self.transport.send(self.lastresponse)
         else:
             log.warning("%s expecting INVITE. Request ignored", self)
 
     def Proceeding_1xx(self):
-        self.response = self.events[-1]
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
 
     def Proceeding_2xx(self):
-        self.response = self.events[-1]
         self.state = 'Terminated'
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
 
     def Proceeding_3456(self):
-        self.response = self.events[-1]
         self.state = 'Completed'
         self.Gduration = self.T1
         self.armtimer('G', self.Gduration)
         self.armtimer('H', 64*self.T1)
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
     Proceeding_3xx = Proceeding_4xx = Proceeding_5xx = Proceeding_6xx = Proceeding_3456
 
     def Proceeding_Error(self):
@@ -284,7 +418,7 @@ class INVITEserverTransaction(Transaction):
     Completed_Request = Proceeding_Request
 
     def Completed_TimerG(self):
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
         self.Gduration = min(2*self.Gduration, self.T2)
         self.armtimer('G', self.Gduration)
 
@@ -301,35 +435,121 @@ class INVITEserverTransaction(Transaction):
 
     def Confirmed_TimerI(self):
         self.state = 'Terminated'
-        
+
+#                               |INVITE + 2xx
+#                               |
+#                               V       Timer G fires
+#                         +-----------+ send 2xx
+#                         |           |--------+
+#                         | Completed |        |
+#                         |           |<-------+
+#                         +-----------+
+#                            |     |
+#                        ACK |     |  Timer H fires
+#                        -   |     |  -
+#                            V     V 
+#                         +-----------+
+#                         |           |
+#                         | Terminated|
+#                         |           |
+#                         +-----------+
+
+class ACKserverTransaction(Transaction):
+    identifier = staticmethod(clientidentifier)
+
+    def __init__(self, *args, response2xx, **kwargs):
+        Transaction.__init__(self, *args, **kwargs)
+        self.lastresponse = response2xx
+
+    def init(self):
+        self.state = 'Completed'
+        self.Gduration = self.T1
+        self.armtimer('G', self.Gduration)
+        self.armtimer('H', 64*self.T1)
+
+    def Completed_TimerG(self):
+        self.transport.send(self.lastresponse)
+        self.Gduration = min(2*self.Gduration, self.T2)
+        self.armtimer('G', self.Gduration)
+
+    def Completed_TimerH(self):
+        self.state = 'Terminated'
+        self.final = True
+
+    def Completed_Request(self):
+        if self.lastrequest.METHOD == 'ACK':
+            self.state = 'Terminated'
+            self.final = True
+        else:
+            log.warning("%s expecting ACK. Request ignored", self)
+
+
+#                                  |Request received
+#                                  |pass to TU
+#                                  V
+#                            +-----------+
+#                            |           |
+#                            | Trying    |-------------+
+#                            |           |             |
+#                            +-----------+             |200-699 from TU
+#                                  |                   |send response
+#                                  |1xx from TU        |
+#                                  |send response      |
+#                                  |                   |
+#               Request            V      1xx from TU  |
+#               send response+-----------+send response|
+#                   +--------|           |--------+    |
+#                   |        | Proceeding|        |    |
+#                   +------->|           |<-------+    |
+#            +<--------------|           |             |
+#            |Trnsprt Err    +-----------+             |
+#            |Inform TU            |                   |
+#            |                     |                   |
+#            |                     |200-699 from TU    |
+#            |                     |send response      |
+#            |  Request            V                   |
+#            |  send response+-----------+             |
+#            |      +--------|           |             |
+#            |      |        | Completed |<------------+
+#            |      +------->|           |
+#            +<--------------|           |
+#            |Trnsprt Err    +-----------+
+#            |Inform TU            |
+#            |                     |Timer J fires
+#            |                     |-
+#            |                     |
+#            |                     V
+#            |               +-----------+
+#            |               |           |
+#            +-------------->| Terminated|
+#                            |           |
+#                            +-----------+
+#
+#                Figure 8: non-INVITE server transaction
 class NonINVITEserverTransaction(Transaction):
     identifier = staticmethod(serveridentifier)
 
     def init(self):
-        self.response = self.request.response(100)
         self.state = 'Trying'
 
     def Trying_1xx(self):
-        self.response = self.events[-1]
         self.state = "Proceeding"
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
 
     def Trying_23456(self):
-        self.response = self.events[-1]
         self.state = "Completed"
         self.armtimer('J', 64*self.T1)
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
     Trying_2xx = Trying_3xx = Trying_4xx = Trying_5xx = Trying_6xx = Trying_23456
 
     def Proceeding_Request(self):
         if self.lastrequest.METHOD == self.request.METHOD:
-            self.transport.send(self.response)
+            self.transport.send(self.lastresponse)
         else:
             log.warning("%s expecting %s. Request ignored", self, self.request.METHOD)
 
     def Proceeding_1xx(self):
-        self.response = self.events[-1]
-        self.transport.send(self.response)
+        self.transport.send(self.lastresponse)
 
     def Proceeding_Error(self):
         self.state = 'Terminated'
@@ -394,10 +614,13 @@ if __name__ == '__main__':
                     id = clientidentifier(message)
                     assert(id in self.transactions)
                     transaction = self.transactions[id]
-                    transaction.eventresponse(message)
+                    transaction.eventmessage(message)
         def newtransaction(self, request, addr):
             id = clientidentifier(request)
-            transaction = ClientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
+            if isinstance(request, Message.INVITE):
+                transaction = INVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
+            else:
+                transaction = NonINVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
             self.transactions[id] = transaction
             return transaction
 
