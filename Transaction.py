@@ -35,6 +35,11 @@ def serveridentifier(request):
         method = request.METHOD
     return (request.branch, sentby, method)
 
+class Timeout(Exception):
+    pass
+class TransportError(Exception):
+    pass
+
 class Transaction:
     def __init__(self, request, transport, addr=None, *, T1, T2, T4):
         self.id = self.identifier(request)
@@ -60,11 +65,15 @@ class Transaction:
     def _setfinal(self, v):
         if v:
             self._final.set()
-            if self.lastevent == self.lastresponse:
+            if self.lastevent == self.lastresponse and self.lastresponse.familycode > 1:
                 self.finalresponse = self.lastresponse
         else:
             self._final.clear()
     final = property(_getfinal, _setfinal)
+
+    def _getterminated(self):
+        return self.state == 'Terminated'
+    terminated = property(_getterminated)
     
     def wait(self):
         self._final.wait()
@@ -99,7 +108,7 @@ class Transaction:
             eventcb = getattr(self, '{}_Error'.format(self.state), None)
             if eventcb:
                 log.info("%s <-- Transport error", self)
-                self.lastevent = 'transport error'
+                self.lastevent = TransportError()
                 eventcb()
                 log.info(self)
 
@@ -110,7 +119,7 @@ class Transaction:
                 if eventcb:
                     log.info("%s <-- Timer %s", self, name)
                     if name in ('B', 'F', 'H'):
-                        self.lastevent = 'time out'
+                        self.lastevent = Timeout()
                     eventcb()
                     if self.state != state:
                         log.info(self)

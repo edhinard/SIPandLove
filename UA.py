@@ -12,17 +12,31 @@ from . import Transport
 from . import Transaction
 from . import Timer
 
-class UA(threading.Thread):
-    def __init__(self, transport, T1, T2, T4):
+class AuthenticationError(Exception):
+    def __init__(self, code, reason):
+        self.code = code
+        self.reason = reason
+    def __str__(self):
+        return "{} {}".format(self.code, self.reason)
+
+class SIPPhone(threading.Thread):
+    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
         Transport.errorcb = self.transporterror
+
         self.transport = transport
-        self.T1 = T1
-        self.T2 = T2
-        self.T4 = T4
+        self.proxy = proxy
+        self.uri = uri
+        self.addressofrecord = addressofrecord
+        self.contacturi = SIPBNF.URI(self.addressofrecord)
+        self.contacturi.host = transport.listenip
+        self.contacturi.port = transport.listenport
+        self.credentials = credentials
+        self.T1 = T1 or .5
+        self.T2 = T2 or 4.
+        self.T4 = T4 or 5.
         self.lock = threading.Lock()
-        self.clienttransactions = {}
-        self.servertransactions = {}
+        self.transactions = []
         allow = set(('ACK',))
         for attr in dir(self):
             if attr.endswith('_handler'):
@@ -30,51 +44,133 @@ class UA(threading.Thread):
                 if method == method.upper():
                     allow.add(method)
         self.allow = 'Allow: {}'.format(', '.join(allow))
+        self.reg = Message.REGISTER(self.uri,
+                                    'From: {}'.format(self.addressofrecord),
+                                    'To: {}'.format(self.addressofrecord),
+                                    'Contact: {}'.format(self.contacturi),
+                                    self.allow)
         self.start()
+
+    def __str__(self):
+        return str(self.contacturi)
+
     def transporterror(self, err, addr, message):
-        if isinstance(message, Message.SIPRequest):
-            idc = Transaction.clientidentifier(message)
-            with self.lock:
-                transaction = self.clienttransactions.get(idc)
-        else:
-            ids = Transaction.serveridentifier(message)
-            with self.lock:
-                transaction = self.servertransactions.get(ids)
-        if transaction:
-            transaction.eventerror(message)
+        with self.lock:
+            transaction = self.transactionmatching(message)
+            if transaction:
+                transaction.eventerror(message)
     def newservertransaction(self, request):
         with self.lock:
-            transaction = Transaction.ServerTransaction(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
-            self.servertransactions[transaction.id] = transaction
+            if isinstance(request, Message.INVITE):
+                transactionclass = Transaction.INVITEserverTransaction
+            else:
+                transactionclass = Transaction.NonINVITEserverTransaction
+            transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
+            self.transactions.append(transaction)
             return transaction            
     def newclienttransaction(self, request, addr):
         with self.lock:
-            transaction = Transaction.ClientTransaction(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
-            self.clienttransactions[transaction.id] = transaction
+            if isinstance(request, Message.INVITE):
+                transactionclass = Transaction.INVITEclientTransaction
+            else:
+                transactionclass = Transaction.NonINVITEclientTransaction
+            transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+            self.transactions.append(transaction)
             return transaction
+    def transactionmatching(self, message):
+        with self.lock:
+            for transaction in self.transactions:
+                if transaction.id == transaction.identifier(message):
+                    return transaction
     def run(self):
         while True:
             message = self.transport.recv()
-            if isinstance(message, Message.SIPResponse):
-                id = Transaction.clientidentifier(message)
-                with self.lock:
-                    transaction = self.clienttransactions.get(id)
-                if transaction:
-                    transaction.eventresponse(message)
-            elif isinstance(message, Message.SIPRequest):
-                id = Transaction.serveridentifier(message)
-                with self.lock:
-                    transaction = self.servertransactions.get(id)
-                if transaction:
-                    transaction.eventrequest(message)
-                else:
-                    if message.METHOD != 'ACK':
-                        transaction = self.newservertransaction(message)
-                        handler = getattr(self, '{}_handler'.format(message.METHOD), None)
-                        if handler is None:
-                            transaction.eventresponse(message.response(405, self.allow))
-                        else:
-                            Handler(handler, transaction, message)
+            transaction = self.transactionmatching(message)
+            if transaction:
+                transaction.eventmessage(message)
+                if transaction.terminated:
+                    self.transactions.remove(transaction)
+                if isinstance(transaction, Transaction.INVITEclientTransaction) \
+                   and transaction.finalresponse \
+                   and transaction.finalresponse.familycode == 2:
+                    ack = xxx
+                    addr = xxx
+                    newtransaction = Transaction.ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+                    self.transactions.append(newtransaction)
+                if isinstance(transaction, Transaction.INVITEserverTransaction) \
+                   and transaction.finalresponse \
+                   and transaction.finalresponse.familycode == 2:
+                    response = transaction.finalresponse
+                    newtransaction = Transaction.ACKserverTransaction(invite, self.transport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
+                    self.transactions.append(newtransaction)
+
+            else:
+                if message.METHOD != 'ACK':
+                    transaction = self.newservertransaction(message)
+                    handler = getattr(self, '{}_handler'.format(message.METHOD), None)
+                    if handler is None:
+                        transaction.eventmessage(message.response(405, self.allow))
+                    else:
+                        Handler(handler, transaction, message)
+
+    def authenticate(self, message, addr):
+        message.newbranch()
+        message.getheader('CSeq').seq += 1
+        transaction = self.newclienttransaction(message, addr)
+        transaction.wait()
+        if transaction.finalresponse and transaction.finalresponse.code in (401, 407):
+            log.info("%s needs authentication", message.METHOD)
+            message.addauthorization(transaction.finalresponse, **self.credentials)
+            message.newbranch()
+            transaction = self.newclienttransaction(message, addr)
+            transaction.wait()
+        if not transaction.finalresponse:
+            raise transaction.lastevent
+        if transaction.finalresponse.familycode != 2:
+            raise AuthencationError(finalresponse.code, finalresponse.reason)
+        return transaction.finalresponse
+    
+    def register(self, expires=3600):
+        if expires > 0:
+            log.info("%s registering for %ds", self, expires)
+        else:
+            log.info("%s unregistering", self)
+        self.reg.removeheader('Expires')
+        self.reg.addheaders('Expires: {}'.format(expires))
+        try:
+            finalresponse = self.authenticate(self.reg, self.proxy)
+        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError) as e:
+            log.info("%s registering failed: %s", self, e)
+            return False
+
+        expiresheader = finalresponse.getheader('Expires')
+        if expiresheader:
+            expires = expiresheader.delta
+        contactheader = finalresponse.getheader('Contact')
+        if contactheader:
+            expires = contactheader.params.get('expires')
+        if expires > 0:
+            log.info("%s registered for %ds", self, expires)
+        else:
+            log.info("%s unregistered", self)
+        #self.registration ...
+        return True
+
+    def invite(self, touri, sdp):
+        log.info("%s inviting %s", self, touri)
+        invite = Message.INVITE(touri,
+                                'From: {}'.format(self.addressofrecord),
+                                'To: {}'.format(touri),
+                                'Contact: {}'.format(self.contacturi),
+                                self.allow,
+                                'c:application/sdp',
+                                body=sdp)
+        try:
+            finalresponse = self.authenticate(self.reg, self.proxy)
+        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError) as e:
+            log.info("%s inviting failed: %s", self, e)
+            return False
+        log.info("invite ok")
 
 class Handler(threading.Thread):
     def __init__(self, handler, transaction, request):
@@ -86,87 +182,7 @@ class Handler(threading.Thread):
     def run(self):
         response = self.handler(self.request)
         if response:
-            self.transaction.eventresponse(response)
-    
-
-class SIPPhone(UA):
-    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, T1=.5, T2=4., T4=5.):
-        UA.__init__(self, transport, T1, T2, T4)
-        self.proxy = proxy
-        self.uri = uri
-        self.addressofrecord = addressofrecord
-        self.credentials = credentials
-        self.registration =  []
-        self.contacturi = SIPBNF.URI(self.addressofrecord)
-        self.contacturi.host = transport.listenip
-        self.contacturi.port = transport.listenport
-        self.reg = Message.REGISTER(self.uri,
-                                    'From: {}'.format(self.addressofrecord),
-                                    'To: {}'.format(self.addressofrecord),
-                                    'Contact: {}'.format(self.contacturi),
-                                    self.allow)
-    def __str__(self):
-        return str(self.contacturi)
-
-    def authenticate(self, message, addr):
-        message.newbranch()
-        message.getheader('CSeq').seq += 1
-        transaction = self.newclienttransaction(message, addr)
-        ret = transaction.wait()
-        if ret in (401, 407):
-            log.info("%s needs authentication", message.METHOD)
-            message.addauthorization(transaction.finalresponse, **self.credentials)
-            message.newbranch()
-            transaction = self.newclienttransaction(message, addr)
-            ret = transaction.wait()
-        return ret, transaction.finalresponse
-    
-    def register(self, expires=3600):
-        if expires > 0:
-            log.info("%s registering for %ds", self, expires)
-        else:
-            log.info("%s unregistering", self)
-        self.reg.removeheader('Expires')
-        self.reg.addheaders('Expires: {}'.format(expires))
-        code, finalresponse = self.authenticate(self.reg, self.proxy)
-        if finalresponse and finalresponse.familycode == 2:
-            expiresheader = finalresponse.getheader('Expires')
-            if expiresheader:
-                expires = expiresheader.delta
-            contactheader = finalresponse.getheader('Contact')
-            if contactheader:
-                expires = contactheader.params.get('expires')
-            if expires > 0:
-                log.info("%s registered for %ds", self, expires)
-            else:
-                log.info("%s unregistered", self)
-            #self.registration ...
-        else:
-            if finalresponse:
-                log.info("%s (un)registering failed: %d %s", self, finalresponse.code, finalresponse.reason)
-            else:
-                log.info("%s (un)registering failed: %s", self, code)
-            return True
-        return False
-
-    def invite(self, touri, sdp):
-        log.info("%s inviting %s", self, touri)
-        invite = Message.INVITE(touri,
-                                'From: {}'.format(self.addressofrecord),
-                                'To: {}'.format(touri),
-                                'Contact: {}'.format(self.contacturi),
-                                self.allow,
-                                'c:application/sdp',
-                                body=sdp)
-        code, finalresponse = self.authenticate(invite, self.proxy)
-        if finalresponse and finalresponse.familycode == 2:
-            log.info("invite ok")
-        else:
-            if finalresponse:
-                log.info("%s inviting failed: %d %s", self, finalresponse.code, finalresponse.reason)
-            else:
-                log.info("%s inviting failed: %s", self, code)
-            
+            self.transaction.eventmessage(response)
 
 
 
@@ -194,13 +210,13 @@ if __name__ == '__main__':
                 'level': 'INFO'
             },
             'Transport': {
-                'level': 'ERROR'
+                'level': 'WARNING'
             },
             'Message': {
-                'level': 'ERROR'
+                'level': 'WARNING'
             },
             'Header': {
-                'level': 'ERROR'
+                'level': 'WARNING'
             }
         },
         'root': {
