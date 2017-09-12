@@ -124,13 +124,15 @@ class SIPPhone(threading.Thread):
                         Handler(handler, transaction, message)
 
     def INVITE_handler(self, invite):
-        sdp = """v=0
-o=- 123 123 IN IP4 172.20.35.253
-s=-
-m=audio 4001 RTP/AVP 8
-c=IN IP4 172.20.35.253
-a=rtpmap:8 PCMA/8000
-"""
+        mediatransport = Transport.MediaTransport(self.mediaip, self.mediaport)
+        sdplines = ['v=0',
+                    'o=- {0} {0} IN IP4 {1}'.format(random.randint(0,0xffffffff), self.mediaip),
+                    's=-',
+                    'm=audio {} RTP/AVP {}'.format(mediatransport.localport, ' '.join([str(t) for t,n,f in self.codecs])),
+                    'c=IN IP4 {}'.format(self.mediaip),
+        ] + ['a=rtpmap:{} {}'.format(t, n) for t,n,f in self.codecs if n] + ['a=fmtp:{} {}'.format(t, f) for t,n,f in self.codecs if f]
+        sdp = '\r\n'.join(sdplines)
+
         return invite.response(200,
                                'Contact: {}'.format(self.contacturi),
                                'c:application/sdp',
@@ -204,8 +206,9 @@ a=rtpmap:8 PCMA/8000
             finalresponse = self.authenticate(invite, self.proxy)
         except (Transaction.Timeout, Transaction.TransportError, AuthenticationError) as e:
             log.info("%s inviting failed: %s", self, e)
-            return False
+            return
         log.info("invite ok")
+        return mediatransport
 
 class Handler(threading.Thread):
     def __init__(self, handler, transaction, request):
@@ -287,7 +290,9 @@ m=audio 4000 RTP/AVP 8
 c=IN IP4 172.20.35.253
 a=rtpmap:8 PCMA/8000
 """
-    ret = phone.invite('sip:+33900821221@osk.nokims.eu', sdp)
+    media = phone.invite('sip:+33900821221@osk.nokims.eu', sdp)
+    for i in range(500):
+        media.send(b'xxx'*20, ('194.2.137.40', 5432))
     import time
     time.sleep(30)
     
