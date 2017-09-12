@@ -29,12 +29,12 @@ def get_ip_address(ifname):
     )[20:24])
 
 
-class Transport(multiprocessing.Process):
-    def __init__(self, listenip, listenport=5060, tcp_only=False):
-        self.listenip = listenip
-        self.listenport = listenport
+class SignalingTransport(multiprocessing.Process):
+    def __init__(self, localip, localport=5060, tcp_only=False):
+        self.localip = localip
+        self.localport = localport
         self.tcp_only = tcp_only
-        self.error = ErrorListener.newlistener(listenip)
+        self.error = ErrorListener.newlistener(localip)
         self.pipe,self.childpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self, daemon=True)
         self.start()
@@ -45,7 +45,7 @@ class Transport(multiprocessing.Process):
             protocol = "TCP"
         else:
             protocol = "TCP+UDP"
-        return "{}/{}:{}".format(protocol, self.listenip, self.listenport)
+        return "SIG {}/{}:{}".format(protocol, self.localip, self.localport)
 
     def send(self, message, addr=(None,5060), protocol=None):
         if not isinstance(message, Message.SIPMessage):
@@ -68,9 +68,9 @@ class Transport(multiprocessing.Process):
                 if via.protocol == '???':
                     via.protocol = protocol
                 if via.host == '0.0.0.0':
-                    via.host = self.listenip
-                if via.port == None and self.listenport != 5060:
-                    via.port = self.listenport
+                    via.host = self.localip
+                if via.port == None and self.localport != 5060:
+                    via.port = self.localport
 
         elif isinstance(message, Message.SIPResponse):
             if via:
@@ -117,12 +117,12 @@ class Transport(multiprocessing.Process):
     def run(self):
         maintcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         maintcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        maintcp.bind((self.listenip, self.listenport))
+        maintcp.bind((self.localip, self.localport))
         maintcp.listen()
 
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp.bind((self.listenip, self.listenport))
+        udp.bind((self.localip, self.localport))
 
         tcpsockets = ServiceSockets()
         while True:
@@ -229,7 +229,6 @@ class ServiceSockets:
             if currenttime - lasttime[0] > self.TIMEOUT:
                 self.delete(sock)
 
-
 class ErrorListener(threading.Thread):
     listeners = {}
     lock = threading.Lock()
@@ -251,7 +250,7 @@ class ErrorListener(threading.Thread):
             log.warning("Cannot open raw socket for ICMP. Administrator privilege needed to do so")
         threading.Thread.__init__(self, daemon=True)
         self.start()
-        
+
     def run(self):
         global errorcb
         if self.rawsock:
@@ -315,6 +314,66 @@ class ErrorListener(threading.Thread):
                         with ErrorListener.lock:
                             errorcb(err, addr, message)
 
+class MediaTransport(multiprocessing.Process):
+    def __init__(self, localip, localport=None):
+        self.localip = localip
+        self.localport = localport
+        self.pipe,self.childpipe = multiprocessing.Pipe()
+        multiprocessing.Process.__init__(self, daemon=True)
+        self.start()
+        self.localport = self.pipe.recv()
+        if self.localport == None:
+            log.error("cannot bind to %s", localport)
+            raise Exception("cannot bind to %s", localport)
+        log.debug("%s starting process %d", self, self.pid)
+
+    def __del__(self):
+        self.terminate()
+
+    def __str__(self):
+        return "MEDIA {}:{}".format(self.localip, self.localport)
+
+    def send(self, rtp, addr):
+        self.pipe.send((addr, rtp))
+
+    def recv(self, timeout=None):
+        if self.pipe.poll(timeout):
+            addr,rtp = self.pipe.recv()
+            return rtp
+        return None
+                
+    def run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if self.localport is None:
+            port = 1025
+            while True:
+                try:
+                    sock.bind((self.localip, port))
+                    break
+                except:
+                    port += 1
+        else:
+                try:
+                    sock.bind((self.localip, self.localport))
+                except:
+                    del sock
+                    self.childpipe.send(None)
+                    return
+        self.childpipe.send(port)
+
+        while True:
+            for obj in multiprocessing.connection.wait([self.childpipe, sock], 1):
+                # Packet comming from upper layer --> send to remote address
+                if obj == self.childpipe:
+                    remoteaddr,rtp = self.childpipe.recv()
+                    sock.sendto(rtp, remoteaddr)
+                    continue
+
+                # Incomming UDP packet --> decode and send to upper layer
+                elif obj == sock:
+                    rtp,remoteaddr = sock.recvfrom(65536)
+                    self.childpipe.send((remoteaddr,rtp))
 
 if __name__ == '__main__':
     import logging.config
@@ -341,7 +400,7 @@ if __name__ == '__main__':
         }
     }
     logging.config.dictConfig(LOGGING)
-    t = Transport(get_ip_address('eno1'), listenport=5061, tcp_only=True)
+    t = SignalingTransport(get_ip_address('eno1'), localport=5061, tcp_only=True)
     t.send(Message.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu'),

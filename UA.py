@@ -3,6 +3,7 @@
 
 import multiprocessing
 import threading
+import random
 import logging
 log = logging.getLogger('UA')
 
@@ -22,18 +23,25 @@ class AuthenticationError(Exception):
         return self.reason
 
 class SIPPhone(threading.Thread):
-    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, T1=None, T2=None, T4=None):
+    def __init__(self, sigtransport, proxy, uri, addressofrecord, credentials=None, codecs=None, mediaip=None, mediaport=None, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
         Transport.errorcb = self.transporterror
 
-        self.transport = transport
+        self.sigtransport = sigtransport
         self.proxy = proxy
         self.uri = uri
         self.addressofrecord = addressofrecord
         self.contacturi = SIPBNF.URI(self.addressofrecord)
-        self.contacturi.host = transport.listenip
-        self.contacturi.port = transport.listenport
+        self.contacturi.host = transport.localip
+        self.contacturi.port = transport.localport
         self.credentials = credentials
+        if codecs is None:
+            self.codecs = [(0,'PCMU/8000',None),
+                           (8,'PCMA/8000',None)]
+        else:
+            self.codecs = codecs
+        self.mediaip = mediaip or self.sigtransport.localip
+        self.mediaport = mediaport
         self.T1 = T1 or .5
         self.T2 = T2 or 4.
         self.T4 = T4 or 5.
@@ -67,7 +75,7 @@ class SIPPhone(threading.Thread):
                 transactionclass = Transaction.INVITEserverTransaction
             else:
                 transactionclass = Transaction.NonINVITEserverTransaction
-            transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
+            transaction = transactionclass(request, self.sigtransport, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
             return transaction            
     def newclienttransaction(self, request, addr):
@@ -76,7 +84,7 @@ class SIPPhone(threading.Thread):
                 transactionclass = Transaction.INVITEclientTransaction
             else:
                 transactionclass = Transaction.NonINVITEclientTransaction
-            transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+            transaction = transactionclass(request, self.sigtransport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
             return transaction
     def transactionmatching(self, message):
@@ -86,7 +94,7 @@ class SIPPhone(threading.Thread):
                     return transaction
     def run(self):
         while True:
-            message = self.transport.recv()
+            message = self.sigtransport.recv()
             transaction = self.transactionmatching(message)
             if transaction:
                 transaction.eventmessage(message)
@@ -97,13 +105,13 @@ class SIPPhone(threading.Thread):
                    and transaction.finalresponse.familycode == 2:
                     ack = transaction.request.ack(message)
                     addr = transaction.addr
-                    newtransaction = Transaction.ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+                    newtransaction = Transaction.ACKclientTransaction(ack, self.sigtransport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
                     self.transactions.append(newtransaction)
                 if isinstance(transaction, Transaction.INVITEserverTransaction) \
                    and transaction.finalresponse \
                    and transaction.finalresponse.familycode == 2:
                     response = transaction.finalresponse
-                    newtransaction = Transaction.ACKserverTransaction(invite, self.transport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
+                    newtransaction = Transaction.ACKserverTransaction(invite, self.sigtransport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
                     self.transactions.append(newtransaction)
 
             else:
@@ -114,6 +122,20 @@ class SIPPhone(threading.Thread):
                         transaction.eventmessage(message.response(405, self.allow))
                     else:
                         Handler(handler, transaction, message)
+
+    def INVITE_handler(self, invite):
+        sdp = """v=0
+o=- 123 123 IN IP4 172.20.35.253
+s=-
+m=audio 4001 RTP/AVP 8
+c=IN IP4 172.20.35.253
+a=rtpmap:8 PCMA/8000
+"""
+        return invite.response(200,
+                               'Contact: {}'.format(self.contacturi),
+                               'c:application/sdp',
+                               self.allow,
+                               body=sdp)
 
     def authenticate(self, message, addr):
         message.newbranch()
@@ -162,6 +184,15 @@ class SIPPhone(threading.Thread):
 
     def invite(self, touri, sdp):
         log.info("%s inviting %s", self, touri)
+        mediatransport = Transport.MediaTransport(self.mediaip, self.mediaport)
+        sdplines = ['v=0',
+                    'o=- {0} {0} IN IP4 {1}'.format(random.randint(0,0xffffffff), self.mediaip),
+                    's=-',
+                    'm=audio {} RTP/AVP {}'.format(mediatransport.localport, ' '.join([str(t) for t,n,f in self.codecs])),
+                    'c=IN IP4 {}'.format(self.mediaip),
+        ] + ['a=rtpmap:{} {}'.format(t, n) for t,n,f in self.codecs if n] + ['a=fmtp:{} {}'.format(t, f) for t,n,f in self.codecs if f]
+        sdp = '\r\n'.join(sdplines)
+
         invite = Message.INVITE(touri,
                                 'From: {}'.format(self.addressofrecord),
                                 'To: {}'.format(touri),
@@ -238,26 +269,13 @@ if __name__ == '__main__':
     }
     logging.config.dictConfig(LOGGING)
 
-    class MyPhone(SIPPhone):
-        def INVITE_handler(self, invite):
-            sdp = """v=0
-o=- 123 123 IN IP4 172.20.35.253
-s=-
-m=audio 4001 RTP/AVP 8
-c=IN IP4 172.20.35.253
-a=rtpmap:8 PCMA/8000
-"""
-            return invite.response(200,
-                                   'Contact: {}'.format(self.contacturi),
-                                   'c:application/sdp',
-                                   self.allow,
-                                   body=sdp)
+
             
-    transport = Transport.Transport(Transport.get_ip_address('eno1'), 5678)
+    transport = Transport.SignalingTransport(Transport.get_ip_address('eno1'), 5678)
     phone = SIPPhone(transport, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821224@osk.nokims.eu', credentials=dict(username='+33900821224@osk.nokims.eu', password='nsnims2008'))
 
-    transport2 = Transport.Transport(Transport.get_ip_address('eno1'), 5070)
-    phone2 = MyPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
+    transport2 = Transport.SignalingTransport(Transport.get_ip_address('eno1'), 5070)
+    phone2 = SIPPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
 
     ret = phone.register()
     ret = phone2.register()
@@ -271,7 +289,7 @@ a=rtpmap:8 PCMA/8000
 """
     ret = phone.invite('sip:+33900821221@osk.nokims.eu', sdp)
     import time
-    time.sleep(60)
+    time.sleep(30)
     
     ret = phone.register(0)
     ret = phone2.register(0)

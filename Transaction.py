@@ -611,7 +611,7 @@ if __name__ == '__main__':
         def __init__(self):
             threading.Thread.__init__(self, daemon=True)
             Transport.errorcb = self.transporterror
-            self.transport = Transport.Transport(Transport.get_ip_address('eno1'), listenport=5061)
+            self.transport = Transport.Transport(Transport.get_ip_address('eno1'), localport=5061)
             self.transactions = {}
             self.start()
         def transporterror(self, err, addr, message):
