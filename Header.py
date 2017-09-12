@@ -31,13 +31,44 @@ class Headers:
         self.add(*headers, strictparsing=strictparsing)
         
     def add(self, *headers, strictparsing=True):
+        headers,errors = Headers.parse(*headers, strictparsing)
+        self.errors.extend(errors)
+        self._headers.extend(headers)
+        return headers
+
+    def replaceoradd(self, *headers, strictparsing=True):
+        headers,errors = Headers.parse(*headers, strictparsing)
+        self.errors.extend(errors)
+
+        replaced = {}
+        for header in headers:
+            name = header.name
+            num = replaced.setdefault(name, 1)
+            try:
+                index = self.nindex(name, num)
+            except:
+                try:
+                    index = self.nindex(name, num-1)
+                except:
+                    self._headers.append(header)
+                else:
+                    self._headers.insert(index+1, header)
+                replaced[name] += 1
+            else:
+                self._headers[index] = header
+                replaced[name] += 1
+        return headers
+
+    @staticmethod
+    def parse(*headers, strictparsing):
         newheaders = []
+        errors = []
         for header in headers:
             #
             # Already formed Headers are copied and added to the list
             #
             if isinstance(header, Header):
-                self._headers.append(copy.deepcopy(header))
+                newheaders.append(copy.deepcopy(header))
                 continue
 
             
@@ -66,9 +97,8 @@ class Headers:
                     if strictparsing:
                         raise
                     else:
-                        self.errors.append(error)
-        self._headers.extend(newheaders)
-        return newheaders
+                        errors.append(error)
+        return newheaders, errors
 
     def getlist(self, *names):
         for index in self.indices(*names):
@@ -114,10 +144,20 @@ class Headers:
                 if name in once:
                     lookup.remove(name)
     def firstindex(self, name):
+        return nindex(self, name, 1)
+    def nindex(self, name, n):
+        if n < 1:
+            raise IndexError("expecting strictly positive number")
         try:
-            index = next(self.indices(name))
+            indices = self.indices(name)
+            index = next(indices)
         except StopIteration:
-            raise Exception("No Header with that name {!r}".format(name))
+            raise Exception("No header with that name {!r}".format(name))
+        for i in range(1,n):
+            try:
+                index = next(indices)
+            except StopIteration:
+                raise Exception("Only {} header(s) with that name {!r}.".format(i, name))
         return index
  
     def tobytes(self, headerform='nominal'):
