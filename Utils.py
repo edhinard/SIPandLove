@@ -71,6 +71,10 @@ class ParameterDict:
         """List of keys in their original case."""
         return [v[0] for v in self._dict.values()]
 
+    def __iter__(self):
+        for k in self.keys():
+            yield k
+
     def values(self):
         """List of values."""
         return [v[1] for v in self._dict.values()]
