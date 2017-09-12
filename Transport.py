@@ -161,8 +161,8 @@ class Transport(multiprocessing.Process):
                     while True:
                         decodeinfo = Message.SIPMessage.predecode(buf)
 
-                        # Erroneous messages of message missing a Content-Length makes the stream desynchronized
-                        if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and decodeinfo.contentlength is None):
+                        # Erroneous messages or messages missing a Content-Length make the stream desynchronized
+                        if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and not decodeinfo.framing):
                             tcpsockets.delete(obj)
                             break
 

@@ -31,7 +31,7 @@ class DecodeInfo:
         self.status = 'UNFINISHED'
         self.klass = None; self.startline = None;
         self.istart = None; self.iheaders = None; self.iblank = None; self.ibody = None; self.iend = None
-        self.contentlength = None
+        self.framing = False
         self.error = None
 
     def finish(self):
@@ -114,8 +114,9 @@ class SIPMessage(object):
                 contentheader = m.group(0).strip()
                 contentheader = UNFOLDING_RE.sub(b' ', contentheader)
                 if not b'\r' in contentheader and not b'\n' in contentheader:
-                    decodeinfo.contentlength = int(m.group('length'))
-                    if decodeinfo.contentlength > decodeinfo.iend - decodeinfo.ibody:
+                    contentlength = int(m.group('length'))
+                    decodeinfo.framing = True
+                    if contentlength > decodeinfo.iend - decodeinfo.ibody:
                         decodeinfo.status = 'TRUNCATED'
 
         return decodeinfo
