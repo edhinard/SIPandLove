@@ -21,6 +21,8 @@ def clientidentifier(message):
             method = None
     return (message.branch, method)
 def serveridentifier(request):
+    if isinstance(request, Message.SIPResponse):
+        return
     via = request.getheader('Via')
     if via:
         if via.port:
@@ -192,7 +194,7 @@ class INVITEclientTransaction(Transaction):
         self.final = True
         
     def Calling_3456(self):
-        self.transport.send(self.request.ack(self.events[-1]), self.addr)
+        self.transport.send(self.request.ack(self.lastevent), self.addr)
         self.state = 'Completed'
         self.armtimer('D', 32)
         self.final = True
@@ -206,14 +208,14 @@ class INVITEclientTransaction(Transaction):
         self.final = True
         
     def Proceeding_3456(self):
-        self.transport.send(self.request.ack(self.events[-1]), self.addr)
+        self.transport.send(self.request.ack(self.lastevent), self.addr)
         self.armtimer('D', 32)
         self.state = 'Completed'
         self.final = True
     Proceeding_3xx = Proceeding_4xx = Proceeding_5xx = Proceeding_6xx = Proceeding_3456
 
     def Completed_3456(self):
-        self.transport.send(self.request.ack(self.events[-1]), self.addr)
+        self.transport.send(self.request.ack(self.lastevent), self.addr)
     Completed_3xx = Completed_4xx = Completed_5xx = Completed_6xx = Completed_3456
 
     def Completed_TimerD(self):

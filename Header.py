@@ -31,18 +31,18 @@ class Headers:
         self.add(*headers, strictparsing=strictparsing)
         
     def add(self, *headers, strictparsing=True):
-        headers,errors = Headers.parse(*headers, strictparsing)
+        headers,errors = Headers.parse(*headers, strictparsing=strictparsing)
         self.errors.extend(errors)
         self._headers.extend(headers)
         return headers
 
     def replaceoradd(self, *headers, strictparsing=True):
-        headers,errors = Headers.parse(*headers, strictparsing)
+        headers,errors = Headers.parse(*headers, strictparsing=strictparsing)
         self.errors.extend(errors)
 
         replaced = {}
         for header in headers:
-            name = header.name
+            name = header._indexname
             num = replaced.setdefault(name, 1)
             try:
                 index = self.nindex(name, num)
@@ -144,7 +144,7 @@ class Headers:
                 if name in once:
                     lookup.remove(name)
     def firstindex(self, name):
-        return nindex(self, name, 1)
+        return self.nindex(name, 1)
     def nindex(self, name, n):
         if n < 1:
             raise IndexError("expecting strictly positive number")

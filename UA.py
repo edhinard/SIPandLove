@@ -13,11 +13,13 @@ from . import Transaction
 from . import Timer
 
 class AuthenticationError(Exception):
-    def __init__(self, code, reason):
+    def __init__(self, reason, code=None):
         self.code = code
-        self.reason = reason
+        self.reason = str(reason)
     def __str__(self):
-        return "{} {}".format(self.code, self.reason)
+        if self.code:
+            return "{} {}".format(self.code, self.reason)
+        return self.reason
 
 class SIPPhone(threading.Thread):
     def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, T1=None, T2=None, T4=None):
@@ -93,8 +95,8 @@ class SIPPhone(threading.Thread):
                 if isinstance(transaction, Transaction.INVITEclientTransaction) \
                    and transaction.finalresponse \
                    and transaction.finalresponse.familycode == 2:
-                    ack = xxx
-                    addr = xxx
+                    ack = transaction.request.ack(message)
+                    addr = transaction.addr
                     newtransaction = Transaction.ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
                     self.transactions.append(newtransaction)
                 if isinstance(transaction, Transaction.INVITEserverTransaction) \
@@ -105,7 +107,7 @@ class SIPPhone(threading.Thread):
                     self.transactions.append(newtransaction)
 
             else:
-                if message.METHOD != 'ACK':
+                if isinstance(message, Message.SIPRequest) and message.METHOD != 'ACK':
                     transaction = self.newservertransaction(message)
                     handler = getattr(self, '{}_handler'.format(message.METHOD), None)
                     if handler is None:
@@ -120,14 +122,17 @@ class SIPPhone(threading.Thread):
         transaction.wait()
         if transaction.finalresponse and transaction.finalresponse.code in (401, 407):
             log.info("%s needs authentication", message.METHOD)
-            message.addauthorization(transaction.finalresponse, **self.credentials)
+            auth = message.authenticationheader(transaction.finalresponse, **self.credentials)
+            if auth.header is None:
+                raise AuthenticationError(auth.error)
+            message.replaceoraddheaders(auth.header)
             message.newbranch()
             transaction = self.newclienttransaction(message, addr)
             transaction.wait()
         if not transaction.finalresponse:
             raise transaction.lastevent
         if transaction.finalresponse.familycode != 2:
-            raise AuthencationError(finalresponse.code, finalresponse.reason)
+            raise AuthenticationError(transaction.finalresponse.reason, transaction.finalresponse.code)
         return transaction.finalresponse
     
     def register(self, expires=3600):
@@ -135,8 +140,7 @@ class SIPPhone(threading.Thread):
             log.info("%s registering for %ds", self, expires)
         else:
             log.info("%s unregistering", self)
-        self.reg.removeheader('Expires')
-        self.reg.addheaders('Expires: {}'.format(expires))
+        self.reg.replaceoraddheaders('Expires: {}'.format(expires))
         try:
             finalresponse = self.authenticate(self.reg, self.proxy)
         except (Transaction.Timeout, Transaction.TransportError, AuthenticationError) as e:
@@ -166,7 +170,7 @@ class SIPPhone(threading.Thread):
                                 'c:application/sdp',
                                 body=sdp)
         try:
-            finalresponse = self.authenticate(self.reg, self.proxy)
+            finalresponse = self.authenticate(invite, self.proxy)
         except (Transaction.Timeout, Transaction.TransportError, AuthenticationError) as e:
             log.info("%s inviting failed: %s", self, e)
             return False
@@ -194,34 +198,43 @@ if __name__ == '__main__':
         'formatters': {
             'simple': {
                 'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
+            },
+            'raw': {
+                'format': "%(name)s \x1b[32;1m%(message)s\x1b[m"
             }
         },
         'handlers': {
-            'console': {
+            'console1': {
                 'class': 'logging.StreamHandler',
                 'formatter': 'simple',
+            },
+            'console2': {
+                'class': 'logging.StreamHandler',
+                'formatter': 'raw',
             }
         },
         'loggers': {
             'UA': {
-                'level': 'INFO'
+                'level': 'INFO',
+                'handlers': ['console1']
             },
             'Transaction': {
-                'level': 'INFO'
+                'level': 'INFO',
+                'handlers': ['console1']
             },
             'Transport': {
-                'level': 'WARNING'
+                'level': 'INFO',
+                'handlers': ['console1']
             },
             'Message': {
-                'level': 'WARNING'
+                'level': 'WARNING',
+                'handlers': ['console2']
             },
             'Header': {
-                'level': 'WARNING'
+                'level': 'WARNING',
+                'handlers': ['console1']
             }
         },
-        'root': {
-            'handlers': ['console']
-        }
     }
     logging.config.dictConfig(LOGGING)
 

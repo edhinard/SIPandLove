@@ -38,6 +38,14 @@ class Transport(multiprocessing.Process):
         self.pipe,self.childpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self, daemon=True)
         self.start()
+        log.debug("%s starting process %d", self, self.pid)
+
+    def __str__(self):
+        if self.tcp_only:
+            protocol = "TCP"
+        else:
+            protocol = "TCP+UDP"
+        return "{}/{}:{}".format(protocol, self.listenip, self.listenport)
 
     def send(self, message, addr=(None,5060), protocol=None):
         if not isinstance(message, Message.SIPMessage):

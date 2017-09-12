@@ -2,15 +2,22 @@
 
 import re
 import base64
+import binascii
 import hashlib
 import copy
 import random
 import string
+import collections
 import logging
 log = logging.getLogger('Message')
 
 from . import SIPBNF
 from . import Header
+try:
+    from . import Milenage
+except Exception as e:
+    log.warning("cannot import Milenage (%s). AKAv1 authentication is impossible", e)
+    Milenage = False
 
 
 CRLF = b'\r\n'
@@ -45,7 +52,9 @@ class SIPMessage(object):
     def frombytes(buf):
         decodeinfo = SIPMessage.predecode(buf)
         if decodeinfo.status == 'OK':
+            log.debug("Successful message parsing\n%r", buf)
             return decodeinfo.finish()
+        log.debug("Error %r on message parsing\n%r", decodeinfo.error, buf)
         return None
     
     @staticmethod
@@ -124,6 +133,9 @@ class SIPMessage(object):
 
     def addheaders(self, *headers):
         return self._headers.add(*headers)
+
+    def replaceoraddheaders(self, *headers):
+        return self._headers.replaceoradd(*headers)
 
     def getheaders(self, *names):
         return self._headers.getlist(*names)
@@ -266,27 +278,95 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
 
-    def addauthorization(self, response, nc=1, cnonce=None, **kwargs):
-        for authenticate in response.getheaders('WWW-Authenticate', 'Proxy-Authenticate'):
-            if authenticate.scheme.lower() == 'digest':
-                params = self.digest(realm = authenticate.params.get('realm'),
-                                     username = kwargs.pop('username'),
-                                     nonce = authenticate.params.get('nonce'),
-                                     algorithm = authenticate.params.get('algorithm'),
-                                     qop=authenticate.params.get('qop'),
-                                     nc=nc,
-                                     cnonce=cnonce or ''.join((random.choice(string.ascii_letters) for _ in range(20))),
-                                     **kwargs)
-                if authenticate._name == 'WWW-Authenticate':
-                    self.removeheader('Authorization')
-                    auth=Header.Authorization(scheme=authenticate.scheme, params=params)
-                else:
-                    self.removeheader('Proxy-Authorization')
-                    auth=Header.Proxy_Authorization(scheme=authenticate.scheme, params=params)
-                self.addheaders(auth)
+    def authenticationheader(self, response, nc=1, cnonce=None, **kwargs):
+        Auth = collections.namedtuple('Auth', 'header extra message')
+        Auth.__new__.__defaults__ = ({}, None)
+        authenticates = response.getheaders('WWW-Authenticate', 'Proxy-Authenticate')
+        if not authenticates:
+            return Auth(header=None, error="missing WWW|Proxy-Authenticate header")
+
+        for authenticate in authenticates:
+            extra = {}
+            log.info("Computing authentication with %s", authenticate)
+            if authenticate.scheme.lower() != 'digest':
+                log.warning("unknown authentication sheme %s", authenticate.scheme)
+                continue
+            algorithm = authenticate.params.get('algorithm', 'MD5')
+            if algorithm.lower() not in ('md5', 'md5-sess', 'akav1-md5'):
+                log.warning("unknown algorithm %s", algorithm)
+                continue
+
+            if algorithm.lower() == 'akav1-md5':
+                if not Milenage:
+                    log.info("Milenage not present. Cannot satisfy AKAv1 authentication")
+                    continue
+                if not 'K' in kwargs:
+                    log.info("missing 'K' argument. Cannot satisfy AKAv1 authentication")
+                    continue
+                K = kwargs.pop('K')
+                if not isinstance(K, bytes) or len(K)!=16:
+                    log.info("expecting a 16 bytes string for K, got {!r}. Cannot satisfy AKAv1 authentication".format(K))
+                    continue
+                try:
+                    password,ik,ck = self.AKA(authenticate.params.get('nonce'), K)
+                except Exception as e:
+                    log.warning(e)
+                    continue
+                kwargs['password'] = password
+                extra = dict(aka=True, ik=ik, ck=ck)
+
+            username = kwargs.pop('username', None)
+            if username is None:
+                log.info("missing 'username' argument needed by Digest authentication")
+                continue
+            password = kwargs.pop('password', None)
+            if password is None:
+                log.info("missing 'password' argument needed by Digest authentication")
+                continue
+            params = self.digest(realm = authenticate.params.get('realm'),
+                                 nonce = authenticate.params.get('nonce'),
+                                 algorithm = algorithm,
+                                 qop=authenticate.params.get('qop'),
+                                 nc=nc,
+                                 cnonce=cnonce or ''.join((random.choice(string.ascii_letters) for _ in range(20))),
+                                 username=username,
+                                 password=password)
+            if authenticate._name == 'WWW-Authenticate':
+                auth=Header.Authorization(scheme=authenticate.scheme, params=params)
+            else:
+                auth=Header.Proxy_Authorization(scheme=authenticate.scheme, params=params)
+            return Auth(header=auth, extra=extra)
+        return Auth(header=None, error="impossible to authenticate with received headers")
+
+    @staticmethod
+    def AKA(nonce, K):
+        try:
+            bin_nonce = base64.b64decode(nonce, validate=True)
+        except binascii.Error:
+            raise Exception("nonce value is not base64 encoded")
+        rand = bin_nonce[:16]
+        autn = bin_nonce[16:32]
+        if len(autn) < 16:
+            raise Exception("nonce value is not long enough")
+
+        res, ck, ik, ak = Milenage.Milenage(OP=16*b'\x00').f2345(K, rand)
+        return res, ik, ck
+
 
     def digest(self, *, realm, nonce, algorithm, cnonce, qop, nc, username, password):
         uri = str(self.uri)
+        if qop:
+            qop = qop.lower()
+            for q in qop.split(','):
+                if q == 'auth':
+                    qop = 'auth'
+                    break
+                if q == 'auth-int':
+                    qop = 'auth_int'
+                    break
+            else:
+                log.warning("ignoring unknown qop %s. auth or auth-int was expected", qop)
+                qop = None
         params = dict(realm = realm,
                       uri = uri,
                       username = username,
@@ -294,25 +374,16 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                       algorithm = algorithm,
                       qop=qop,
         )
-        algorithm = algorithm.lower() if algorithm else None
-        if algorithm is not None:
-            if algorithm not in ('md5', 'md5-sess'):
-                pass
-            if cnonce is None:
-                pass
-        qop = qop.lower() if qop else None
-        if qop and qop not in ('auth', 'auth-int'):
-            pass
         
         ha1 = self.md5hash(username, realm, password)
-        if algorithm == 'md5-sess':
+        if algorithm and algorithm.lower() == 'md5-sess':
             ha1 = self.md5hash(ha1, nonce, cnonce)
             params.update(cnonce=cnonce)
             
         if not qop or qop == 'auth':
             ha2 = self.md5hash(self.method, uri)
         else:
-            ha2 = self.md5hash(self.method, uri, md5hash(self.body))
+            ha2 = self.md5hash(self.method, uri, self.md5hash(self.body))
 
         if not qop:
             response = self.md5hash(ha1, nonce, ha2)
@@ -359,13 +430,37 @@ class BYE(SIPRequest):
     pass
 
 if __name__ == '__main__':
-    import sys
+    import logging.config
+    LOGGING = {
+        'version': 1,
+        'formatters': {
+            'simple': {
+                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
+            }
+        },
+        'handlers': {
+            'console': {
+                'class': 'logging.StreamHandler',
+                'formatter': 'simple',
+            }
+        },
+        'loggers': {
+            'Header': {
+                'level': 'INFO'
+            },
+            'Message': {
+                'level': 'DEBUG'
+            }
+        },
+        'root': {
+            'handlers': ['console']
+        }
+    }
+    logging.config.dictConfig(LOGGING)
 
+# ----------------------------------
     register = REGISTER('sip:osk.nokims.eu')
-    print(register)
-    print(SIPRequest.SIPrequestclasses)
-    resp = register.digest(realm="osk.nokims.eu",
-                           uri='sip:osk.nokims.eu',
+    params = register.digest(realm="osk.nokims.eu",
                            nonce="7800e38558e368911AQ8918b7eeaf71a794f910eafbdb376e8848d",
                            algorithm=None,
                            qop="auth",
@@ -373,5 +468,67 @@ if __name__ == '__main__':
                            nc=1,
                            username='+33900821221@osk.nokims.eu',
                            password='nsnims2008')
-    print(resp)
-    assert resp == 'afc145874b3545922d46de9ecf55ed8e'
+    assert params['response'] == 'afc145874b3545922d46de9ecf55ed8e'
+    print("Digest authentication test passed")
+
+# ----------------------------------
+    nonce=base64.b64encode(binascii.unhexlify('a5ac4954f5b6c81ac25d2d8fbf8da281272fc04023e60000517530451bd73895'))
+    K=b'alice\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+    
+    password,ik,ck = SIPRequest.AKA(nonce, K)
+
+    assert password == binascii.unhexlify('bd5c708ee326b965')
+    assert ik == binascii.unhexlify('b87a8e0392ab4cb8aeb29669d87d0518')
+    assert ck == binascii.unhexlify('b4eb9c3b6b10ce98f6dfe36ca8ccdcb6')
+    print("AKA test passed")
+
+# ----------------------------------
+    register = SIPMessage.frombytes(b'''REGISTER sip:ims.mnc001.mcc208.3gppnetwork.org SIP/2.0\r
+Expires: 600000\r
+Authorization: Digest username="alice@ims.mnc001.mcc208.3gppnetwork.org",realm="ims.mnc001.mcc208.3gppnetwork.org",uri="sip:ims.mnc001.mcc208.3gppnetwork.org",nonce="",response="",algorithm=AKAv1-MD5\r
+Security-Client: ipsec-3gpp;prot=esp;mod=trans;spi-c=10525;spi-s=27264;port-c=14803;port-s=20917;alg=hmac-md5-96;ealg=null\r
+From: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=1dd771f8\r
+To: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>\r
+Call-ID: 60e6ee92b282327e@5.5.0.13\r
+CSeq: 1 REGISTER\r
+Max-Forwards: 70\r
+Contact: <sip:alice@5.5.0.13:5060>\r
+Require: sec-agree\r
+Proxy-Require: sec-agree\r
+Supported: sec-agree,path\r
+User-Agent: Samsung IMS 5.0\r
+Via: SIP/2.0/UDP 5.5.0.13:5060;branch=z9hG4bK5f8f754b;transport=UDP;rport\r
+Route: <sip:193.252.231.243:5060;lr>\r
+Content-Length: 0\r
+\r
+''')
+    resp = SIPMessage.frombytes(b'''SIP/2.0 401 Unauthorized - Challenging the UE\r
+From: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=1dd771f8\r
+To: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=faeec13323cf344e1125761a979ec21b-6877\r
+Call-ID: 60e6ee92b282327e@5.5.0.13\r
+CSeq: 1 REGISTER\r
+Via: SIP/2.0/UDP 5.5.0.13:5060;branch=z9hG4bK5f8f754b;transport=UDP;rport=5060\r
+Path: <sip:term@pcscf.ims.mnc001.mcc208.3gppnetwork.org:5060;lr>\r
+Service-Route: <sip:orig@scscf.ims.mnc001.mcc208.3gppnetwork.org:6060;lr>\r
+Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, SUBSCRIBE, NOTIFY, PUBLISH, MESSAGE, INFO\r
+Server: Sip EXpress router (2.1.0-dev1 OpenIMSCore (x86_64/linux))\r
+Content-Length: 0\r
+Warning: 392 193.252.231.243:6060 "Noisy feedback tells:  pid=20527 req_src_ip=193.252.231.243 req_src_port=4060 in_uri=sip:scscf.ims.mnc001.mcc208.3gppnetwork.org:6060 out_uri=sip:scscf.ims.mnc001.mcc208.3gppnetwork.org:6060 via_cnt==3"\r
+WWW-Authenticate: Digest realm="ims.mnc001.mcc208.3gppnetwork.org", nonce="KBdnIyppR5T1v4wsr0DCIKvGvtjeMAAAAbJwt4v710I=", algorithm=AKAv1-MD5, qop="auth,auth-int"\r
+Security-Server: ipsec-3gpp; ealg=null; alg=hmac-md5-96; spi-c=5008; spi-s=5009; port-c=34432; port-s=37529; prot=esp; mod=trans; q=0.1\r
+\r
+''')
+    auth = Header.Header.parse(b'''Authorization: Digest username="alice@ims.mnc001.mcc208.3gppnetwork.org",realm="ims.mnc001.mcc208.3gppnetwork.org",nonce="KBdnIyppR5T1v4wsr0DCIKvGvtjeMAAAAbJwt4v710I=",algorithm=AKAv1-MD5,uri="sip:ims.mnc001.mcc208.3gppnetwork.org",response="079d8ec52db706b0d3fa80a2e4003156",qop=auth,nc=00000001,cnonce="bcffc432c12c64e0"''')[0]
+
+    test = register.authenticationheader(resp,
+                                   cnonce=auth.params['cnonce'],
+                                   K=b'alice\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00',
+                                   username='alice@ims.mnc001.mcc208.3gppnetwork.org')
+    assert test.header is not None
+    testparams = test.header.params
+    refparams = auth.params
+    for k in refparams:
+        ref = str(refparams[k])
+        test = str(testparams[k])
+        assert ref==test
+    print("Message parsing + Digest AKA authentication test passed")
