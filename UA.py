@@ -5,6 +5,7 @@ import multiprocessing
 import threading
 import random
 import logging
+import time
 log = logging.getLogger('UA')
 
 from . import SIPBNF
@@ -12,22 +13,27 @@ from . import Message
 from . import Transport
 from . import Transaction
 from . import Timer
+from . import Media
 
 class AuthenticationError(Exception):
-    def __init__(self, reason, code=None):
-        self.code = code
-        self.reason = str(reason)
+    def __init__(self, message):
+        self.message
     def __str__(self):
-        if self.code:
-            return "{} {}".format(self.code, self.reason)
-        return self.reason
+        return self.message
+
+class Refusal(Exception):
+    def __init__(self, response):
+        self.code = response.code
+        self.reason = response.reason
+    def __str__(self):
+        return "{} {}".format(self.code, self.reason)
 
 class SIPPhone(threading.Thread):
-    def __init__(self, sigtransport, proxy, uri, addressofrecord, credentials=None, codecs=None, mediaip=None, mediaport=None, T1=None, T2=None, T4=None):
+    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, mediaip=None, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
         Transport.errorcb = self.transporterror
 
-        self.sigtransport = sigtransport
+        self.transport = transport
         self.proxy = proxy
         self.uri = uri
         self.addressofrecord = addressofrecord
@@ -35,17 +41,12 @@ class SIPPhone(threading.Thread):
         self.contacturi.host = transport.localip
         self.contacturi.port = transport.localport
         self.credentials = credentials
-        if codecs is None:
-            self.codecs = [(0,'PCMU/8000',None),
-                           (8,'PCMA/8000',None)]
-        else:
-            self.codecs = codecs
-        self.mediaip = mediaip or self.sigtransport.localip
-        self.mediaport = mediaport
+        self.mediaip = mediaip or transport.localip
         self.T1 = T1 or .5
         self.T2 = T2 or 4.
         self.T4 = T4 or 5.
         self.lock = threading.Lock()
+        self.media = None
         self.transactions = []
         allow = set(('ACK',))
         for attr in dir(self):
@@ -75,7 +76,7 @@ class SIPPhone(threading.Thread):
                 transactionclass = Transaction.INVITEserverTransaction
             else:
                 transactionclass = Transaction.NonINVITEserverTransaction
-            transaction = transactionclass(request, self.sigtransport, T1=self.T1, T2=self.T2, T4=self.T4)
+            transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
             return transaction            
     def newclienttransaction(self, request, addr):
@@ -84,7 +85,7 @@ class SIPPhone(threading.Thread):
                 transactionclass = Transaction.INVITEclientTransaction
             else:
                 transactionclass = Transaction.NonINVITEclientTransaction
-            transaction = transactionclass(request, self.sigtransport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+            transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
             return transaction
     def transactionmatching(self, message):
@@ -94,7 +95,7 @@ class SIPPhone(threading.Thread):
                     return transaction
     def run(self):
         while True:
-            message = self.sigtransport.recv()
+            message = self.transport.recv()
             transaction = self.transactionmatching(message)
             if transaction:
                 transaction.eventmessage(message)
@@ -105,13 +106,13 @@ class SIPPhone(threading.Thread):
                    and transaction.finalresponse.familycode == 2:
                     ack = transaction.request.ack(message)
                     addr = transaction.addr
-                    newtransaction = Transaction.ACKclientTransaction(ack, self.sigtransport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+                    newtransaction = Transaction.ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
                     self.transactions.append(newtransaction)
                 if isinstance(transaction, Transaction.INVITEserverTransaction) \
                    and transaction.finalresponse \
                    and transaction.finalresponse.familycode == 2:
                     response = transaction.finalresponse
-                    newtransaction = Transaction.ACKserverTransaction(invite, self.sigtransport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
+                    newtransaction = Transaction.ACKserverTransaction(invite, self.transport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
                     self.transactions.append(newtransaction)
 
             else:
@@ -124,20 +125,23 @@ class SIPPhone(threading.Thread):
                         Handler(handler, transaction, message)
 
     def INVITE_handler(self, invite):
-        mediatransport = Transport.MediaTransport(self.mediaip, self.mediaport)
-        sdplines = ['v=0',
-                    'o=- {0} {0} IN IP4 {1}'.format(random.randint(0,0xffffffff), self.mediaip),
-                    's=-',
-                    'm=audio {} RTP/AVP {}'.format(mediatransport.localport, ' '.join([str(t) for t,n,f in self.codecs])),
-                    'c=IN IP4 {}'.format(self.mediaip),
-        ] + ['a=rtpmap:{} {}'.format(t, n) for t,n,f in self.codecs if n] + ['a=fmtp:{} {}'.format(t, f) for t,n,f in self.codecs if f]
-        sdp = '\r\n'.join(sdplines)
-
+        log.info("%s invited by %s", self, invite.getheader('f').address)
+        if self.media is None:
+            log.info("%s decline invitation", self)
+            return invite.response(603, self.allow)
+        self.media.setparticipantoffer(invite.body)
+        self.media.transmit()
+        log.info("%s accept invitation", self)
         return invite.response(200,
                                'Contact: {}'.format(self.contacturi),
                                'c:application/sdp',
                                self.allow,
-                               body=sdp)
+                               body=self.media.localoffer)
+
+    def BYE_handler(self, bye):
+        log.info("%s byed by %s", self, bye.getheader('f').address)
+        self.media.terminate()
+        return bye.response(200)
 
     def authenticate(self, message, addr):
         message.newbranch()
@@ -145,7 +149,7 @@ class SIPPhone(threading.Thread):
         transaction = self.newclienttransaction(message, addr)
         transaction.wait()
         if transaction.finalresponse and transaction.finalresponse.code in (401, 407):
-            log.info("%s needs authentication", message.METHOD)
+            log.info("%s %s needs authentication", self, message.METHOD)
             auth = message.authenticationheader(transaction.finalresponse, **self.credentials)
             if auth.header is None:
                 raise AuthenticationError(auth.error)
@@ -155,8 +159,10 @@ class SIPPhone(threading.Thread):
             transaction.wait()
         if not transaction.finalresponse:
             raise transaction.lastevent
+        if transaction.finalresponse.code in (401, 407):
+            raise AuthenticationError("{} {}".format(transaction.finalresponse.code, transaction.finalresponse.reason))
         if transaction.finalresponse.familycode != 2:
-            raise AuthenticationError(transaction.finalresponse.reason, transaction.finalresponse.code)
+            raise Refusal(transaction.finalresponse)
         return transaction.finalresponse
     
     def register(self, expires=3600):
@@ -167,7 +173,7 @@ class SIPPhone(threading.Thread):
         self.reg.replaceoraddheaders('Expires: {}'.format(expires))
         try:
             finalresponse = self.authenticate(self.reg, self.proxy)
-        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError) as e:
+        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError, Refusal) as e:
             log.info("%s registering failed: %s", self, e)
             return False
 
@@ -184,16 +190,9 @@ class SIPPhone(threading.Thread):
         #self.registration ...
         return True
 
-    def invite(self, touri, sdp):
+    def invite(self, touri, rtpfile, codecs=None):
         log.info("%s inviting %s", self, touri)
-        mediatransport = Transport.MediaTransport(self.mediaip, self.mediaport)
-        sdplines = ['v=0',
-                    'o=- {0} {0} IN IP4 {1}'.format(random.randint(0,0xffffffff), self.mediaip),
-                    's=-',
-                    'm=audio {} RTP/AVP {}'.format(mediatransport.localport, ' '.join([str(t) for t,n,f in self.codecs])),
-                    'c=IN IP4 {}'.format(self.mediaip),
-        ] + ['a=rtpmap:{} {}'.format(t, n) for t,n,f in self.codecs if n] + ['a=fmtp:{} {}'.format(t, f) for t,n,f in self.codecs if f]
-        sdp = '\r\n'.join(sdplines)
+        self.media = Media.Media(self.mediaip, rtpfile, codecs, owner=self.transport.localip)
 
         invite = Message.INVITE(touri,
                                 'From: {}'.format(self.addressofrecord),
@@ -201,14 +200,18 @@ class SIPPhone(threading.Thread):
                                 'Contact: {}'.format(self.contacturi),
                                 self.allow,
                                 'c:application/sdp',
-                                body=sdp)
+                                body=self.media.localoffer)
         try:
             finalresponse = self.authenticate(invite, self.proxy)
-        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError) as e:
-            log.info("%s inviting failed: %s", self, e)
+        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError, Refusal) as e:
+            log.info("%s invitation failed: %s", self, e)
             return
-        log.info("invite ok")
-        return mediatransport
+        log.info("%s invitation ok", self)
+        self.media.setparticipantoffer(finalresponse.body)
+        self.media.transmit()
+
+    def wheninvited(self, rtpfile, codecs=None):
+        self.media = Media.Media(self.mediaip, rtpfile, codecs, owner=self.transport.localip)
 
 class Handler(threading.Thread):
     def __init__(self, handler, transaction, request):
@@ -232,41 +235,34 @@ if __name__ == '__main__':
         'formatters': {
             'simple': {
                 'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
-            },
-            'raw': {
-                'format': "%(name)s \x1b[32;1m%(message)s\x1b[m"
             }
         },
         'handlers': {
-            'console1': {
+            'console': {
                 'class': 'logging.StreamHandler',
                 'formatter': 'simple',
-            },
-            'console2': {
-                'class': 'logging.StreamHandler',
-                'formatter': 'raw',
             }
         },
         'loggers': {
             'UA': {
                 'level': 'INFO',
-                'handlers': ['console1']
+                'handlers': ['console']
             },
             'Transaction': {
-                'level': 'INFO',
-                'handlers': ['console1']
+                'level': 'WARNING',
+                'handlers': ['console']
             },
             'Transport': {
-                'level': 'INFO',
-                'handlers': ['console1']
+                'level': 'WARNING',
+                'handlers': ['console']
             },
             'Message': {
                 'level': 'WARNING',
-                'handlers': ['console2']
+                'handlers': ['console']
             },
             'Header': {
                 'level': 'WARNING',
-                'handlers': ['console1']
+                'handlers': ['console']
             }
         },
     }
@@ -274,27 +270,23 @@ if __name__ == '__main__':
 
 
             
-    transport = Transport.SignalingTransport(Transport.get_ip_address('eno1'), 5678)
-    phone = SIPPhone(transport, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821224@osk.nokims.eu', credentials=dict(username='+33900821224@osk.nokims.eu', password='nsnims2008'))
+    transport1 = Transport.Transport(Transport.get_ip_address('eno1'), 5678)
+    phone1 = SIPPhone(transport1, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821224@osk.nokims.eu', credentials=dict(username='+33900821224@osk.nokims.eu', password='nsnims2008'))
 
-    transport2 = Transport.SignalingTransport(Transport.get_ip_address('eno1'), 5070)
+    transport2 = Transport.Transport(Transport.get_ip_address('eno1'), 5070)
     phone2 = SIPPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
 
-    ret = phone.register()
+    ret = phone1.register()
     ret = phone2.register()
 
-    sdp = """v=0
-o=- 123 123 IN IP4 172.20.35.253
-s=-
-m=audio 4000 RTP/AVP 8
-c=IN IP4 172.20.35.253
-a=rtpmap:8 PCMA/8000
-"""
-    media = phone.invite('sip:+33900821221@osk.nokims.eu', sdp)
-    for i in range(500):
-        media.send(b'xxx'*20, ('194.2.137.40', 5432))
-    import time
-    time.sleep(30)
-    
-    ret = phone.register(0)
+    with open('toto', 'w') as f:
+        f.write('TOTO')
+    with open('titi', 'w') as f:
+        f.write('TITI')
+    phone2.wheninvited('toto')
+    phone1.invite('sip:+33900821221@osk.nokims.eu', 'titi')
+
+    time.sleep(5)
+   
+    ret = phone1.register(0)
     ret = phone2.register(0)

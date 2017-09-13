@@ -29,7 +29,7 @@ def get_ip_address(ifname):
     )[20:24])
 
 
-class SignalingTransport(multiprocessing.Process):
+class Transport(multiprocessing.Process):
     def __init__(self, localip, localport=5060, tcp_only=False):
         self.localip = localip
         self.localport = localport
@@ -45,7 +45,7 @@ class SignalingTransport(multiprocessing.Process):
             protocol = "TCP"
         else:
             protocol = "TCP+UDP"
-        return "SIG {}/{}:{}".format(protocol, self.localip, self.localport)
+        return "{}/{}:{}".format(protocol, self.localip, self.localport)
 
     def send(self, message, addr=(None,5060), protocol=None):
         if not isinstance(message, Message.SIPMessage):
@@ -400,7 +400,7 @@ if __name__ == '__main__':
         }
     }
     logging.config.dictConfig(LOGGING)
-    t = SignalingTransport(get_ip_address('eno1'), localport=5061, tcp_only=True)
+    t = Transport(get_ip_address('eno1'), localport=5061, tcp_only=True)
     t.send(Message.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu'),
