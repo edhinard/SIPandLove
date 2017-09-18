@@ -314,67 +314,6 @@ class ErrorListener(threading.Thread):
                         with ErrorListener.lock:
                             errorcb(err, addr, message)
 
-class MediaTransport(multiprocessing.Process):
-    def __init__(self, localip, localport=None):
-        self.localip = localip
-        self.localport = localport
-        self.pipe,self.childpipe = multiprocessing.Pipe()
-        multiprocessing.Process.__init__(self, daemon=True)
-        self.start()
-        self.localport = self.pipe.recv()
-        if self.localport == None:
-            log.error("cannot bind to %s", localport)
-            raise Exception("cannot bind to %s", localport)
-        log.debug("%s starting process %d", self, self.pid)
-
-    def __del__(self):
-        self.terminate()
-
-    def __str__(self):
-        return "MEDIA {}:{}".format(self.localip, self.localport)
-
-    def send(self, rtp, addr):
-        self.pipe.send((addr, rtp))
-
-    def recv(self, timeout=None):
-        if self.pipe.poll(timeout):
-            addr,rtp = self.pipe.recv()
-            return rtp
-        return None
-                
-    def run(self):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        if self.localport is None:
-            port = 1025
-            while True:
-                try:
-                    sock.bind((self.localip, port))
-                    break
-                except:
-                    port += 1
-        else:
-                try:
-                    sock.bind((self.localip, self.localport))
-                except:
-                    del sock
-                    self.childpipe.send(None)
-                    return
-        self.childpipe.send(port)
-
-        while True:
-            for obj in multiprocessing.connection.wait([self.childpipe, sock], 1):
-                # Packet comming from upper layer --> send to remote address
-                if obj == self.childpipe:
-                    remoteaddr,rtp = self.childpipe.recv()
-                    sock.sendto(rtp, remoteaddr)
-                    continue
-
-                # Incomming UDP packet --> decode and send to upper layer
-                elif obj == sock:
-                    rtp,remoteaddr = sock.recvfrom(65536)
-                    self.childpipe.send((remoteaddr,rtp))
-
 if __name__ == '__main__':
     import logging.config
     LOGGING = {
