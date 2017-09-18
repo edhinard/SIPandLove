@@ -190,9 +190,9 @@ class SIPPhone(threading.Thread):
         #self.registration ...
         return True
 
-    def invite(self, touri, rtpfile, codecs=None):
+    def invite(self, touri, rtpfile):
         log.info("%s inviting %s", self, touri)
-        self.media = Media.Media(self.mediaip, rtpfile, codecs, owner=self.transport.localip)
+        self.media = Media.Media(self.mediaip, rtpfile, owner=self.transport.localip)
 
         invite = Message.INVITE(touri,
                                 'From: {}'.format(self.addressofrecord),
@@ -210,8 +210,8 @@ class SIPPhone(threading.Thread):
         self.media.setparticipantoffer(finalresponse.body)
         self.media.transmit()
 
-    def wheninvited(self, rtpfile, codecs=None):
-        self.media = Media.Media(self.mediaip, rtpfile, codecs, owner=self.transport.localip)
+    def wheninvited(self, rtpfile):
+        self.media = Media.Media(self.mediaip, rtpfile, owner=self.transport.localip)
 
 class Handler(threading.Thread):
     def __init__(self, handler, transaction, request):
@@ -270,23 +270,21 @@ if __name__ == '__main__':
 
 
             
-    transport1 = Transport.Transport(Transport.get_ip_address('eno1'), 5678)
+    transport1 = Transport.Transport(Transport.get_ip_address('eno1'), 5555)
     phone1 = SIPPhone(transport1, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821224@osk.nokims.eu', credentials=dict(username='+33900821224@osk.nokims.eu', password='nsnims2008'))
+#    phone1 = SIPPhone(transport1, '172.20.56.7', 'sip:sip.osk.com', 'sip:+33960700011@sip.osk.com', credentials=dict(username='+33960700011@sip.osk.com', password='huawei'))
 
-    transport2 = Transport.Transport(Transport.get_ip_address('eno1'), 5070)
+    transport2 = Transport.Transport(Transport.get_ip_address('eno1'), 6666)
     phone2 = SIPPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
+#    phone2 = SIPPhone(transport2, '172.20.56.7', 'sip:sip.osk.com', 'sip:+33960700012@sip.osk.com', credentials=dict(username='+33960700012@sip.osk.com', password='huawei'))
 
     ret = phone1.register()
     ret = phone2.register()
 
     with open('toto', 'w') as f:
-        f.write('TOTO')
-    with open('titi', 'w') as f:
-        f.write('TITI')
+        f.write("PT=0\nseq=0x100\n<<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>>")
     phone2.wheninvited('toto')
-    phone1.invite('sip:+33900821221@osk.nokims.eu', 'titi')
+    phone1.invite('sip:+33900821221@osk.nokims.eu', Media.RTPRandomStream(PT=10, rtplen=40))
 
-    time.sleep(5)
-   
     ret = phone1.register(0)
     ret = phone2.register(0)
