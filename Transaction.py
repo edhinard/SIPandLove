@@ -576,42 +576,14 @@ class NonINVITEserverTransaction(Transaction):
 
 
 if __name__ == '__main__':
-    from . import Transport
-    from . import Timer
-
-    import logging.config
-    LOGGING = {
-        'version': 1,
-        'formatters': {
-            'simple': {
-                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
-            }
-        },
-        'handlers': {
-            'console': {
-                'class': 'logging.StreamHandler',
-                'formatter': 'simple',
-            }
-        },
-        'loggers': {
-            'Transaction': {
-                'level': 'INFO'
-            },
-            'Transport': {
-                'level': 'ERROR'
-            }
-        },
-        'root': {
-            'handlers': ['console']
-        }
-    }
-    logging.config.dictConfig(LOGGING)
+    import snl
+    snl.loggers['Transaction'].setLevel('INFO')
 
     class UA(threading.Thread):
         def __init__(self):
             threading.Thread.__init__(self, daemon=True)
-            Transport.errorcb = self.transporterror
-            self.transport = Transport.Transport(Transport.get_ip_address('eno1'), localport=5061)
+            snl.Transport.errorcb = self.transporterror
+            self.transport = snl.Transport('eno1', localport=5061)
             self.transactions = {}
             self.start()
         def transporterror(self, err, addr, message):
@@ -621,14 +593,14 @@ if __name__ == '__main__':
         def run(self):
             while True:
                 message = self.transport.recv()
-                if isinstance(message, Message.SIPResponse):
+                if isinstance(message, snl.SIPResponse):
                     id = clientidentifier(message)
                     assert(id in self.transactions)
                     transaction = self.transactions[id]
                     transaction.eventmessage(message)
         def newtransaction(self, request, addr):
             id = clientidentifier(request)
-            if isinstance(request, Message.INVITE):
+            if isinstance(request, snl.INVITE):
                 transaction = INVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
             else:
                 transaction = NonINVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
@@ -636,10 +608,10 @@ if __name__ == '__main__':
             return transaction
 
     ua = UA()
-    req1 = Message.REGISTER('sip:osk.nokims.eu',
+    req1 = snl.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu')
-    req2 = Message.REGISTER('sip:osk.nokims.eu',
+    req2 = snl.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu')
     transaction1 = ua.newtransaction(req1, '194.2.137.40')

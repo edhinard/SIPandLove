@@ -30,11 +30,14 @@ def get_ip_address(ifname):
 
 
 class Transport(multiprocessing.Process):
-    def __init__(self, localip, localport=5060, tcp_only=False):
-        self.localip = localip
+    def __init__(self, localiporinterface, localport=5060, tcp_only=False):
+        if not '.' in localiporinterface:
+            self.localip = get_ip_address(localiporinterface)
+        else:
+            self.localip = localiporinterface
         self.localport = localport
         self.tcp_only = tcp_only
-        self.error = ErrorListener.newlistener(localip)
+        self.error = ErrorListener.newlistener(self.localip)
         self.pipe,self.childpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self, daemon=True)
         self.start()
@@ -315,36 +318,15 @@ class ErrorListener(threading.Thread):
                             errorcb(err, addr, message)
 
 if __name__ == '__main__':
-    import logging.config
-    LOGGING = {
-        'version': 1,
-        'formatters': {
-            'simple': {
-                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
-            }
-        },
-        'handlers': {
-            'console': {
-                'class': 'logging.StreamHandler',
-                'formatter': 'simple',
-            }
-        },
-        'loggers': {
-            'Transport': {
-                'level': 'DEBUG'
-            }
-        },
-        'root': {
-            'handlers': ['console']
-        }
-    }
-    logging.config.dictConfig(LOGGING)
-    t = Transport(get_ip_address('eno1'), localport=5061, tcp_only=True)
-    t.send(Message.REGISTER('sip:osk.nokims.eu',
+    import snl
+    snl.loggers['Transport'].setLevel('INFO')
+
+    t = snl.Transport('eno1', localport=5061, tcp_only=True)
+    t.send(snl.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu'),
            ('194.2.137.40',5060)
     )
-    t.send(Message.REGISTER('sip:osk.nkims.eu'), '127.0.0.1')
+    t.send(snl.REGISTER('sip:osk.nkims.eu'), '127.0.0.1')
     t.recv(3)
     t.recv(3)

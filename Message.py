@@ -122,6 +122,10 @@ class SIPMessage(object):
         return decodeinfo
     
     def __init__(self, *headers, body):
+        self.setbody(body)
+        self._headers = Header.Headers(*headers)
+
+    def setbody(self, body, contenttype=None):
         if body is None:
             self.body = b''
         elif isinstance(body, str):
@@ -130,7 +134,8 @@ class SIPMessage(object):
             self.body = bytes(body)
         else:
             raise TypeError("body should be of type str or bytes")
-        self._headers = Header.Headers(*headers)
+        if contenttype:
+            self.addheaders('c:{}'.format(contenttype))
 
     def addheaders(self, *headers):
         return self._headers.add(*headers)

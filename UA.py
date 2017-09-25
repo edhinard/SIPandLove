@@ -29,7 +29,7 @@ class Refusal(Exception):
         return "{} {}".format(self.code, self.reason)
 
 class SIPPhone(threading.Thread):
-    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, mediaip=None, T1=None, T2=None, T4=None):
+    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
         Transport.errorcb = self.transporterror
 
@@ -41,7 +41,6 @@ class SIPPhone(threading.Thread):
         self.contacturi.host = transport.localip
         self.contacturi.port = transport.localport
         self.credentials = credentials
-        self.mediaip = mediaip or transport.localip
         self.T1 = T1 or .5
         self.T2 = T2 or 4.
         self.T4 = T4 or 5.
@@ -140,7 +139,8 @@ class SIPPhone(threading.Thread):
 
     def BYE_handler(self, bye):
         log.info("%s byed by %s", self, bye.getheader('f').address)
-        self.media.terminate()
+        if self.media:
+            self.media.stop()
         return bye.response(200)
 
     def authenticate(self, message, addr):
@@ -190,28 +190,31 @@ class SIPPhone(threading.Thread):
         #self.registration ...
         return True
 
-    def invite(self, touri, rtpfile):
-        log.info("%s inviting %s", self, touri)
-        self.media = Media.Media(self.mediaip, rtpfile, owner=self.transport.localip)
-
+    def invite(self, touri):
         invite = Message.INVITE(touri,
                                 'From: {}'.format(self.addressofrecord),
                                 'To: {}'.format(touri),
                                 'Contact: {}'.format(self.contacturi),
-                                self.allow,
-                                'c:application/sdp',
-                                body=self.media.localoffer)
+                                self.allow)
+        if self.media:
+            invite.setbody(self.media.localoffer, 'application/sdp')
+            log.info("%s inviting %s with SDP", self, touri)
+        else:
+            log.info("%s inviting %s without SDP", self, touri)
+
         try:
             finalresponse = self.authenticate(invite, self.proxy)
         except (Transaction.Timeout, Transaction.TransportError, AuthenticationError, Refusal) as e:
             log.info("%s invitation failed: %s", self, e)
             return
         log.info("%s invitation ok", self)
-        self.media.setparticipantoffer(finalresponse.body)
-        self.media.transmit()
+        if self.media:
+            self.media.setparticipantoffer(finalresponse.body)
+            self.media.transmit()
 
-    def wheninvited(self, rtpfile):
-        self.media = Media.Media(self.mediaip, rtpfile, owner=self.transport.localip)
+    def setmedia(self, rtpfile, mediaip=None):
+        self.media = Media.Media(mediaip or self.transport.localip, rtpfile, owner=self.transport.localip)
+        return self.media
 
 class Handler(threading.Thread):
     def __init__(self, handler, transaction, request):
@@ -229,62 +232,26 @@ class Handler(threading.Thread):
 
     
 if __name__ == '__main__':
-    import logging.config
-    LOGGING = {
-        'version': 1,
-        'formatters': {
-            'simple': {
-                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
-            }
-        },
-        'handlers': {
-            'console': {
-                'class': 'logging.StreamHandler',
-                'formatter': 'simple',
-            }
-        },
-        'loggers': {
-            'UA': {
-                'level': 'INFO',
-                'handlers': ['console']
-            },
-            'Transaction': {
-                'level': 'WARNING',
-                'handlers': ['console']
-            },
-            'Transport': {
-                'level': 'WARNING',
-                'handlers': ['console']
-            },
-            'Message': {
-                'level': 'WARNING',
-                'handlers': ['console']
-            },
-            'Header': {
-                'level': 'WARNING',
-                'handlers': ['console']
-            }
-        },
-    }
-    logging.config.dictConfig(LOGGING)
-
+    import snl
+    snl.loggers['UA'].setLevel('INFO')
 
             
-    transport1 = Transport.Transport(Transport.get_ip_address('eno1'), 5555)
-    phone1 = SIPPhone(transport1, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821224@osk.nokims.eu', credentials=dict(username='+33900821224@osk.nokims.eu', password='nsnims2008'))
+    transport1 = snl.Transport('eno1', 5555)
+    phone1 = snl.SIPPhone(transport1, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821224@osk.nokims.eu', credentials=dict(username='+33900821224@osk.nokims.eu', password='nsnims2008'))
 #    phone1 = SIPPhone(transport1, '172.20.56.7', 'sip:sip.osk.com', 'sip:+33960700011@sip.osk.com', credentials=dict(username='+33960700011@sip.osk.com', password='huawei'))
+    phone1.register()
+    phone1.setmedia(Media.RTPRandomStream(PT=10, rtplen=40))
 
-    transport2 = Transport.Transport(Transport.get_ip_address('eno1'), 6666)
-    phone2 = SIPPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
+    transport2 = snl.Transport('eno1', 6666)
+    phone2 = snl.SIPPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
 #    phone2 = SIPPhone(transport2, '172.20.56.7', 'sip:sip.osk.com', 'sip:+33960700012@sip.osk.com', credentials=dict(username='+33960700012@sip.osk.com', password='huawei'))
-
-    ret = phone1.register()
-    ret = phone2.register()
-
+    phone2.register()
     with open('toto', 'w') as f:
         f.write("PT=0\nseq=0x100\n<<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>>")
-    phone2.wheninvited('toto')
-    phone1.invite('sip:+33900821221@osk.nokims.eu', Media.RTPRandomStream(PT=10, rtplen=40))
+    media = phone2.setmedia('toto')
+    
+    phone1.invite('sip:+33900821221@osk.nokims.eu')
+    media.wait()
 
     ret = phone1.register(0)
     ret = phone2.register(0)

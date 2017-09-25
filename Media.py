@@ -3,9 +3,9 @@
 
 import sys
 import multiprocessing
+import multiprocessing.connection
 import random
 import socket
-import select
 import struct
 import ast
 import time
@@ -18,11 +18,17 @@ class Media(multiprocessing.Process):
         self.localport = None
         self.remoteip = None
         self.remoteport = None
-        if isinstance(rtp, RTPStream):
-            self.rtp = rtp
+        if rtp is None:
+            self.rtp = None
+            self.codecs = []
+            for payloadtype,(codecname, codecformat) in RTPStream.defaultcodecs.items():
+                self.codecs.append((payloadtype, codecname, codecformat))
         else:
-            self.rtp = RTPFile(rtp)
-        self.codecs = [self.rtp.codec]
+            if isinstance(rtp, RTPStream):
+                self.rtp = rtp
+            else:
+                self.rtp = RTPFile(rtp)
+            self.codecs = [self.rtp.codec]
         self.owner = owner or '0.0.0.0'
         self.pipe,self.childpipe = multiprocessing.Pipe()
 
@@ -57,9 +63,13 @@ class Media(multiprocessing.Process):
                 self.remoteport = int(line.split()[1])
 
     def transmit(self):
-        if self.remoteip is None or self.remoteport is None:
-            raise Exception("missing participant offer")
-        self.pipe.send((self.remoteip, self.remoteport))
+        if self.remoteip is not None and self.remoteport is not None:
+            self.pipe.send((self.remoteip, self.remoteport))
+        else:
+            log.warning("missing participant offer")
+
+    def stop(self):
+        self.pipe.send(None)
 
     def wait(self):
         self.pipe.recv()
@@ -75,14 +85,20 @@ class Media(multiprocessing.Process):
         except Exception as e:
             self.childpipe.send(e)
             return
-        self.childpipe.send(sock.getsockname()[1])
+        self.localport = sock.getsockname()[1]
+        self.childpipe.send(self.localport)
 
         # wait for parent process to give remote address
         remoteaddr = self.childpipe.recv()
+        if not remoteaddr:
+            self.childpipe.send(None)
+            return
 
         # send content of RTP file and discard incoming datagrams
         wakeuptime = time.monotonic() # initial wakeup time is now
-        while True:
+        running = self.rtp and not self.rtp.eof
+        log.info("%s Starting", self)
+        while running and not self.rtp.eof:
             currenttime = time.monotonic()
             if wakeuptime <= currenttime:
                 sleep = 0
@@ -90,25 +106,26 @@ class Media(multiprocessing.Process):
                 sleep = wakeuptime - currenttime
 
             # wait for incoming data from socket or wakeup time
-            r,w,x = select.select([sock],[],[], sleep)
-            if r:
-                # incoming data
-                assert sock == r[0]
-                sock.recvfrom(65536)
-            else:
+            obj = None
+            for obj in multiprocessing.connection.wait([sock, self.childpipe], sleep):
+                if obj == sock:
+                    # incoming data
+                    buf,addr = sock.recvfrom(65536)
+                    log.info("%s <-- %d bytes", self, len(buf))
+                elif obj == self.childpipe:
+                    self.childpipe.recv()
+                    running = False
+            if obj is None:
                 # time to send next RTP packet if there is one
                 if not self.rtp.eof:
                     rtp,duration = self.rtp.nextpacket()
                     sock.sendto(rtp, remoteaddr)
+                    log.info("%s --> %d bytes", self, len(rtp))
                     wakeuptime += duration
-                else:
-                    break
 
+        # unlock waiting parent process
         self.childpipe.send(None)
-
-        # RTP file is exhausted, keep discarding incoming datagrams
-        while True:
-            sock.recvfrom(65536)
+        log.info("%s Stopping", self)
 
 
 class RTPStream:
@@ -254,8 +271,6 @@ class RTPFile(RTPStream):
 
         self.__dict__.update(params)
 
-
-
 class RTPRandomStream(RTPStream):
     def __init__(self, PT, rtplen, **params):
         RTPStream.__init__(self)
@@ -291,28 +306,9 @@ class RTPRandomStream(RTPStream):
 if __name__ == '__main__':
     import tempfile
     import os
-    import logging.config
-    LOGGING = {
-        'version': 1,
-        'formatters': {
-            'simple': {
-                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
-            }
-        },
-        'handlers': {
-            'console': {
-                'class': 'logging.StreamHandler',
-                'formatter': 'simple',
-            }
-        },
-        'loggers': {
-            'Media': {
-                'level': 'DEBUG',
-                'handlers': ['console']
-            },
-        },
-    }
-    logging.config.dictConfig(LOGGING)
+
+    import snl
+    snl.loggers['Media'].setLevel('DEBUG')
 
     fd,name = tempfile.mkstemp()
     f = open(fd, 'wb')
