@@ -601,9 +601,9 @@ if __name__ == '__main__':
         def newtransaction(self, request, addr):
             id = clientidentifier(request)
             if isinstance(request, snl.INVITE):
-                transaction = INVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
+                transaction = snl.INVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
             else:
-                transaction = NonINVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
+                transaction = snl.NonINVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
             self.transactions[id] = transaction
             return transaction
 

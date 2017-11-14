@@ -7,19 +7,7 @@ log = logging.getLogger('Header')
 
 from . import SIPBNF
 
-
-class HeaderError(Exception):
-    def __init__(self, msg, headerstring, name=None):
-        self.msg = msg
-        self.headerstring = headerstring
-        self.name = name
-    def __str__(self):
-        if self.name is not None:
-            pre = "Bad {} header".format(self.name)
-        else:
-            pre = "Bad header"
-        return "{}. {}: {!r}".format(pre, self.msg, self.headerstring)
-    
+   
 #
 # Ordered collection of headers in a SIP message
 class Headers:
@@ -93,7 +81,7 @@ class Headers:
                 #
                 try:
                     newheaders.extend(Header.parse(rawheader))
-                except HeaderError as error:
+                except Exception as error:
                     if strictparsing:
                         raise
                     else:
@@ -249,11 +237,8 @@ class Header(metaclass=HeaderMeta):
 
         #
         # Check that header content is a valid UTF-8 string
-        #
-        try:
-            headerstring = rawheader.decode('utf-8')
-        except UnicodeError as err:
-            raise HeaderError("UTF-8 encoding error ({} {!r})".format(err.reason, err.object[err.start:err.end]), rawheader)
+        #  raise UnicodeError
+        headerstring = rawheader.decode('utf-8')
 
         #
         # Parse the header: "^ name [WSP] : value $"
@@ -262,7 +247,7 @@ class Header(metaclass=HeaderMeta):
             name,value = Header.HEADER_RE.match(headerstring).groups()
             value = value.strip()
         except:
-            raise HeaderError("Expecting: header-name HCOLON header-value", headerstring)
+            raise Exception("Expecting: header-name HCOLON header-value. Got {!r}".format(headerstring))
 
         #
         # Unfold the value (replace (blanks) + \r\n + blank(s) with SPACE)
@@ -271,21 +256,15 @@ class Header(metaclass=HeaderMeta):
                 
         #
         # Parse the value according to the name of the header
-        #
+        #  raise SIPBNF.ParseException
         cls = Header.SIPheaderclasses.get(name.lower())
         if cls:
-            error = None
-            try:
-                if cls._multiple:
-                    argsgenerator = cls._parse(value)
-                    headers = ([cls(name, **args) for args in argsgenerator])
-                else:
-                    args = cls._parse(value)
-                    headers = [cls(name, **args)]
-            except SIPBNF.ParseException as e:
-                raise HeaderError("Error at pos {}".format(e.pos), value, cls._name)
-            except Exception as e:
-                raise HeaderError(str(e), value, cls._name)
+            if cls._multiple:
+                argsgenerator = cls._parse(value)
+                headers = ([cls(name, **args) for args in argsgenerator])
+            else:
+                args = cls._parse(value)
+                headers = [cls(name, **args)]
         else:
             headers = [Header(name=name, value=value)]
         return headers
@@ -454,18 +433,18 @@ if __name__ == '__main__':
         'Via: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
         'Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb',
         'Call-ID: HrbWx6Jsr2g57PkBrkQwweCZyXCyM7xb',
-        'Route: "route" <sip:172.20.56.7;lr>',
-        'Route: "une route" <sip:172.20.56.7;lr>',
+        'Route: une route bien droite <sip:172.20.56.7;lr>',
+        'Route: "route 123" <sip:172.20.56.7;lr>',
+        'Route: "une route" <sip:172.20.56.7;lr>, "deuxième route" <sip:172.20.56.7>   ,   \t "et de trois" <sip:172.20.56.7>,<sip:172.20.56.7>',
         'Route: "\xc3\xa0 droite ou \xc3\xa0 gauche ?" <sip:172.20.56.7;lr>',
         'Route: "\xc8\x81\xe8\x80\x81\xf0\x90\x80\x80  \xf4\x80\x80\x80  " <sip:172.20.56.7;lr>',
-        'Route: une route bien droite <sip:172.20.56.7;lr>',
         'Max-Forwards: 70',
         '''Max-Forwards:\r
  70''',
+        'From: <sip:alice@toto.com>;tag',
         'From: sip:alice@toto.com;lr',
 #        'From: sip:alice@toto.com; lr',
         'From: "with quote \\" and backslash \\\\." <sip:172.20.56.7;lr>',
-        'From: <sip:alice@toto.com>;tag',
         'From: sip:+33960700014@sip.osk.com;lr;toto=titi',
         'From: sip:+33960700014@sip.osk.com;lr;toto=titi',
         'From: "aaaaaaaa" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto',
@@ -487,6 +466,7 @@ if __name__ == '__main__':
 
         'Contact: *',
         'Contact: <sip:+33960700014@172.20.35.253:6064;ob>',
+        'Contact: <sip:+33960700014@172.20.35.253:6064;ob>;expires=3600',
         'Contact: <sip:+33960700014@172.20.35.253:6064>,"coucou" <sip:+33960700014@172.20.35.253:6064;ob>,sip:+33960700014@172.20.35.253:6064;ob',
         'Expires: 300',
 
@@ -524,11 +504,11 @@ if __name__ == '__main__':
         try:
             headers = Headers(string, strictparsing=True)
         except Exception as err:
-            print(err)
             sys.exit(1)
         for header in headers:
-            print(header)
+            print(">",header)
             print(repr(header))
+            print()
         print()
     print()
     print(Authorization(scheme='test', params=dict(a='1',b='2')))

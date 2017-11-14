@@ -11,7 +11,7 @@ def unquote(string):
     if string and (string[-1] == '\\' or ESCAPE_RE.match(string)):
         raise Exception("Unexpected backslash in quoted-string")
     return string
-NONTOKENCHARS_RE=re.compile('[] \t"#$&(),/:;<=>?@[\\^{|}]')
+NONTOKENCHARS_RE=re.compile('[] \t"#$&(),/:;<=>?@[\\\\^{|}]')
 def quote(string,forcequote=False):
     if string is None:
         return None
@@ -22,7 +22,7 @@ def quote(string,forcequote=False):
         string = string[1:-1]
     if quotealreadythere or \
        forcequote or \
-       NONTOKENCHARS_RE.match(string) or \
+       NONTOKENCHARS_RE.search(string) or \
        string!=string.encode('ascii','ignore').decode('ascii'):
         return '"{}"'.format(string.replace('\\', '\\\\').replace('"', '\\"'))
     return string

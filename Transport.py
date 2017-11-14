@@ -11,6 +11,7 @@ import socket
 import fcntl
 import struct
 import logging
+import errno
 log = logging.getLogger('Transport')
 
 from . import Message
@@ -41,7 +42,13 @@ class Transport(multiprocessing.Process):
         self.pipe,self.childpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self, daemon=True)
         self.start()
-        log.debug("%s starting process %d", self, self.pid)
+        ret = self.pipe.recv()
+        if ret is None:
+            log.debug("%s starting process %d", self, self.pid)
+        else:
+            log.error(ret)
+            log.error("%s process not started", self)
+            raise ret
 
     def __str__(self):
         if self.tcp_only:
@@ -120,13 +127,24 @@ class Transport(multiprocessing.Process):
     def run(self):
         maintcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         maintcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        maintcp.bind((self.localip, self.localport))
-        maintcp.listen()
+        try:
+            maintcp.bind((self.localip, self.localport))
+            maintcp.listen()
+        except OSError as err:
+            exc = Exception("cannot bind TCP socket to {}:{}. errno={}".format(self.localip, self.localport, errno.errorcode[err.errno]))
+            self.childpipe.send(exc)
+            return
 
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        udp.bind((self.localip, self.localport))
+        try:
+            udp.bind((self.localip, self.localport))
+        except OSError as err:
+            exc = Exception("cannot bind UDP socket to {}:{}. errno={}".format(self.localip, self.localport, errno.errorcode[err.errno]))
+            self.childpipe.send(exc)
+            return
 
+        self.childpipe.send(None)
         tcpsockets = ServiceSockets()
         while True:
             for obj in multiprocessing.connection.wait([self.childpipe, maintcp, udp] + list(tcpsockets), 1):
@@ -235,6 +253,7 @@ class ServiceSockets:
 class ErrorListener(threading.Thread):
     listeners = {}
     lock = threading.Lock()
+    warningraw = False
 
     @staticmethod
     def newlistener(ip):
@@ -250,7 +269,9 @@ class ErrorListener(threading.Thread):
             self.rawsock.bind((ip,0))
         except:
             self.rawsock = None
-            log.warning("Cannot open raw socket for ICMP. Administrator privilege needed to do so")
+            if not ErrorListener.warningraw:
+                ErrorListener.warningraw = True
+                log.warning("Cannot open raw socket for ICMP. Administrator privilege needed to do so")
         threading.Thread.__init__(self, daemon=True)
         self.start()
 

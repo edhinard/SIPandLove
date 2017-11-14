@@ -165,6 +165,20 @@ class SIPPhone(threading.Thread):
             raise Refusal(transaction.finalresponse)
         return transaction.finalresponse
     
+    def options(self):
+        log.info("%s querying for capabilities", self)
+        options = Message.OPTIONS(self.uri,
+                                  'From: {}'.format(self.addressofrecord),
+                                  'To: {}'.format(self.addressofrecord),
+                                  self.allow,
+                                  'Content-Type: application/sdp')
+        try:
+            finalresponse = self.authenticate(options, self.proxy)
+        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError, Refusal) as e:
+            log.info("%s querying failed: %s", self, e)
+            return
+        log.info("%s query ok", self)
+
     def register(self, expires=3600):
         if expires > 0:
             log.info("%s registering for %ds", self, expires)
@@ -190,12 +204,12 @@ class SIPPhone(threading.Thread):
         #self.registration ...
         return True
 
-    def invite(self, touri):
+    def invite(self, touri, *headers):
         invite = Message.INVITE(touri,
                                 'From: {}'.format(self.addressofrecord),
-                                'To: {}'.format(touri),
                                 'Contact: {}'.format(self.contacturi),
-                                self.allow)
+                                self.allow,
+                                *headers)
         if self.media:
             invite.setbody(self.media.localoffer, 'application/sdp')
             log.info("%s inviting %s with SDP", self, touri)
@@ -212,9 +226,45 @@ class SIPPhone(threading.Thread):
             self.media.setparticipantoffer(finalresponse.body)
             self.media.transmit()
 
-    def setmedia(self, rtpfile, mediaip=None):
-        self.media = Media.Media(mediaip or self.transport.localip, rtpfile, owner=self.transport.localip)
+        dialog = Dialog(callid = invite.getheader('call-id').callid,
+                        localtag = invite.fromtag,
+                        remotetag = finalresponse.totag,
+                        localtarget = invite.getheader('contact').address,
+                        remotetarget = finalresponse.getheader('contact').address,
+                        localseq = invite.getheader('CSeq').seq,
+                        remoteseq = finalresponse.getheader('CSeq').seq
+                        )
+        return dialog
+
+    def bye(self, dialog):
+        log.info("%s bying %s", self, dialog)
+        dialog.localseq += 1
+        bye = Message.BYE(dialog.remotetarget,
+                         'to:{};tag={}'.format(dialog.remotetarget, dialog.remotetag),
+                         'from:{};tag={}'.format(dialog.localtarget, dialog.localtag),
+                         'call-id:{}'.format(dialog.callid),
+                         'cesq: {} BYE'.format(dialog.localseq))
+        try:
+            finalresponse = self.authenticate(bye, self.proxy)
+        except (Transaction.Timeout, Transaction.TransportError, AuthenticationError, Refusal) as e:
+            log.info("%s bying failed: %s", self, e)
+            return
+        self.media.stop()
+        log.info("%s bying ok", self)
+
+    def setmedia(self, rtpfile, mediaip=None, mediaport=None):
+        self.media = Media.Media(mediaip or self.transport.localip, mediaport, rtpfile, owner=self.transport.localip)
         return self.media
+
+class Dialog:
+    def __init__(self, callid, localtag, remotetag, localtarget, remotetarget,localseq, remoteseq):
+        self.callid = callid
+        self.localtag = localtag
+        self.remotetag = remotetag
+        self.localtarget = localtarget
+        self.remotetarget = remotetarget
+        self.localseq = localseq
+        self.remoteseq = remoteseq
 
 class Handler(threading.Thread):
     def __init__(self, handler, transaction, request):
@@ -234,6 +284,8 @@ class Handler(threading.Thread):
 if __name__ == '__main__':
     import snl
     snl.loggers['UA'].setLevel('INFO')
+    snl.loggers['Transaction'].setLevel('INFO')
+    snl.loggers['Transport'].setLevel('INFO')
 
             
     transport1 = snl.Transport('eno1', 5555)

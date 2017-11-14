@@ -10,12 +10,13 @@ import struct
 import ast
 import time
 import logging
+import errno
 log = logging.getLogger('Media')
 
 class Media(multiprocessing.Process):
-    def __init__(self, localip, rtp, owner=None):
+    def __init__(self, localip, localport, rtp, owner=None):
         self.localip = localip
-        self.localport = None
+        self.localport = localport or 0
         self.remoteip = None
         self.remoteport = None
         if rtp is None:
@@ -33,6 +34,7 @@ class Media(multiprocessing.Process):
         self.pipe,self.childpipe = multiprocessing.Pipe()
 
         multiprocessing.Process.__init__(self, daemon=True)
+        self.transmitting = False
         self.start()
         ret = self.pipe.recv()
         if not isinstance(ret, int):
@@ -49,13 +51,19 @@ class Media(multiprocessing.Process):
         sdplines = ['v=0',
                     'o=- {0} {0} IN IP4 {1}'.format(random.randint(0,0xffffffff), self.owner),
                     's=-',
+                    'c=IN IP4 {}'.format(self.localip),
+                    't=0 0',
                     'm=audio {} RTP/AVP {}'.format(self.localport, ' '.join([str(t) for t,n,f in self.codecs])),
-                    'c=IN IP4 {}'.format(self.localip)]
+                    'a=sendrecv'
+]
         sdplines.extend(['a=rtpmap:{} {}'.format(t, n) for t,n,f in self.codecs if n])
         sdplines.extend(['a=fmtp:{} {}'.format(t, f) for t,n,f in self.codecs if f])
+        sdplines.append('')
         return '\r\n'.join(sdplines)
 
     def setparticipantoffer(self, sdp):
+        if self.transmitting:
+            return
         for line in sdp.splitlines():
             if line.startswith(b'c='):
                 self.remoteip = line.split()[2]
@@ -63,6 +71,9 @@ class Media(multiprocessing.Process):
                 self.remoteport = int(line.split()[1])
 
     def transmit(self):
+        if self.transmitting:
+            return
+        self.transmitting = True
         if self.remoteip is not None and self.remoteport is not None:
             self.pipe.send((self.remoteip, self.remoteport))
         else:
@@ -81,7 +92,11 @@ class Media(multiprocessing.Process):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            sock.bind((self.localip, 0))
+            sock.bind((self.localip, self.localport))
+        except OSError as err:
+            exc = Exception("cannot bind UDP socket to {}. errno={}".format(self.localip, errno.errorcode[err.errno]))
+            self.childpipe.send(exc)
+            return
         except Exception as e:
             self.childpipe.send(e)
             return
@@ -96,11 +111,13 @@ class Media(multiprocessing.Process):
 
         # send content of RTP file and discard incoming datagrams
         wakeuptime = time.monotonic() # initial wakeup time is now
-        running = self.rtp and not self.rtp.eof
+        running = True
         log.info("%s Starting", self)
-        while running and not self.rtp.eof:
+        while running:
             currenttime = time.monotonic()
-            if wakeuptime <= currenttime:
+            if self.rtp is None:
+                sleep = None
+            elif wakeuptime <= currenttime:
                 sleep = 0
             else:
                 sleep = wakeuptime - currenttime
@@ -111,7 +128,8 @@ class Media(multiprocessing.Process):
                 if obj == sock:
                     # incoming data
                     buf,addr = sock.recvfrom(65536)
-                    log.info("%s <-- %d bytes", self, len(buf))
+                    rtp = RTP.frombytes(buf)
+                    log.info("%s <-- %s", self, rtp)
                 elif obj == self.childpipe:
                     self.childpipe.recv()
                     running = False
@@ -119,14 +137,46 @@ class Media(multiprocessing.Process):
                 # time to send next RTP packet if there is one
                 if not self.rtp.eof:
                     rtp,duration = self.rtp.nextpacket()
-                    sock.sendto(rtp, remoteaddr)
-                    log.info("%s --> %d bytes", self, len(rtp))
+                    sock.sendto(rtp.tobytes(), remoteaddr)
+                    log.info("%s --> %s", self, rtp)
                     wakeuptime += duration
 
         # unlock waiting parent process
         self.childpipe.send(None)
         log.info("%s Stopping", self)
 
+class RTP:
+    def __init__(self, payload, PT, seq, TS, SSRC, version=2, P=0, X=0, CC=0, M=0):
+        self.payload = payload
+        self.PT = PT
+        self.seq = seq
+        self.TS = TS
+        self.SSRC = SSRC
+        self.version,self.P,self.X,self.CC,self.M = version,P,X,CC,M
+
+    def __str__(self):
+        return "PT={} seq=0x{:x} TS=0x{:x} SSRC=0x{:x} + {}bytes".format(self.PT, self.seq, self.TS, self.SSRC, len(self.payload))
+
+    @staticmethod
+    def frombytes(buf):
+        h0,h1,seq,TS,SSRC = struct.unpack_from('!bbHLL', buf[:12] + 12*b'\x00')
+        version = h0>>6
+        P = (h0>>5) & 0b1
+        X = (h0>>4) & 0b1
+        CC = h0 & 0b1111
+        M = h1 >> 7
+        PT = h1 & 0b01111111
+        payload = buf[12:]
+
+        return RTP(payload, PT, seq, TS, SSRC, version, P, X, CC, M)
+
+    def tobytes(self):
+        hdr = bytearray(12)
+        hdr[0] = self.version<<6 | self.P<<5 | self.X<<4 | self.CC
+        hdr[1] = self.M<<7 | self.PT
+        struct.pack_into('!HLL', hdr, 2, self.seq, self.TS, self.SSRC)
+        return hdr + self.payload
+        
 
 class RTPStream:
     defaultcodecs = {
@@ -148,21 +198,32 @@ class RTPStream:
         17:('DVI4/22050',  None),
         18:('G729/8000',   None)}
 
-    def __init__(self):
-        self.eof = False
-        self.name = ''
-        self.version = 2
-        self.P = 0
-        self.X = 0
-        self.CC = 0
-        self.M = 0
-        self.PT = None
-        self.codec = [None, None, None]
-        self.seq = random.randint(0,0xffff)
-        self.duration = 0.020
-        self.TS = random.randint(0,0xffffffff)
-        self.numsamples = None
-        self.SSRC = random.randint(0,0xffffffff)
+    def __init__(self, PT, rtplen, **params):
+        self.PT = PT
+        self.rtplen = rtplen
+        if self.PT in RTPStream.defaultcodecs:
+            self.codec = [self.PT, *RTPStream.defaultcodecs[self.PT]]
+        else:
+            self.codec = [self.PT, None, None]
+        if 'codecname' in params:
+            self.codec[1] = params.pop('codecname')
+        if 'codecformat' in params:
+            self.codec[2] = params.pop('codecformat')
+        if self.codec[1] is None:
+            raise Exception("missing codecname")
+
+        self.seq = params.pop('seq', random.randint(0,0xffff))
+        self.period = params.pop('period', 0.020)
+        self.SSRC = params.pop('SSRC', random.randint(0,0xffffffff))
+        self.TS = params.pop('TS', random.randint(0,0xffffffff))
+        self.numsamples = params.pop('numsamples', None)
+        if self.numsamples is None:
+            try:
+                samplingrate = int(self.codec[1].split('/')[1])
+                self.numsamples = int(samplingrate * self.period)
+            except:
+                raise Exception("missing 'timestamp' or 'numsamples' or sampling rate in codec name")
+        self.eof = True
 
     def __str__(self):
         return "{}({})".format(self.__class__.__name__, self.name)
@@ -175,20 +236,15 @@ class RTPStream:
         return b''
 
     def nextpacket(self):
-        rtp = bytearray(12)
-        rtp[0] = self.version<<6 | self.P<<5 | self.X<<4 | self.CC
-        rtp[1] = self.M<<7 | self.PT
-        struct.pack_into('!HLL', rtp, 2, self.seq, self.TS, self.SSRC)
-        rtp += self.nextpayload()
-
-        log.debug("%s --> PT=%d seq=0x%x TS=0x%x SSRC=0x%x + %dbytes", self, self.PT, self.seq, self.TS, self.SSRC, len(rtp)-12)
+        rtp = RTP(self.nextpayload(), self.PT, self.seq, self.TS, self.SSRC)
 
         self.nextparams()
-        return rtp, self.duration
+        return rtp, self.period
 
 class RTPFile(RTPStream):
     def __init__(self, rtpfile):
         RTPStream.__init__(self)
+        self.eof = False
         if isinstance(rtpfile, str):
             self.f = open(rtpfile, 'rb')
             self.name = rtpfile
@@ -255,7 +311,7 @@ class RTPFile(RTPStream):
         if self.codec[1] is None:
             raise Exception("missing codecname for PT={} in {}".format(self.PT, self))
 
-        self.duration = params.pop('duration', self.duration)
+        self.period = params.pop('period', self.period)
         if 'timestamp' in params:
             self.TS = params.pop('TS')
         else:
@@ -264,7 +320,7 @@ class RTPFile(RTPStream):
             if self.numsamples is None:
                 try:
                     samplingrate = int(self.codec[1].split('/')[1])
-                    self.numsamples = int(samplingrate * self.duration)
+                    self.numsamples = int(samplingrate * self.period)
                 except:
                     raise Exception("cannot compute TS. Missing 'timestamp' or 'numsamples' or sampling rate in codec name in {}".format(self))
             self.TS = (self.TS + self.numsamples)  % 0xffffffff
@@ -273,31 +329,8 @@ class RTPFile(RTPStream):
 
 class RTPRandomStream(RTPStream):
     def __init__(self, PT, rtplen, **params):
-        RTPStream.__init__(self)
-        self.PT = PT
-        self.rtplen = rtplen
-        if self.PT in RTPStream.defaultcodecs:
-            self.codec = [self.PT, *RTPStream.defaultcodecs[self.PT]]
-        else:
-            self.codec = [self.PT, None, None]
-        if 'codecname' in params:
-            self.codec[1] = params.pop('codecname')
-        if 'codecformat' in params:
-            self.codec[2] = params.pop('codecformat')
-        if self.codec[1] is None:
-            raise Exception("missing codecname")
-
-        self.seq = params.pop('seq', self.seq)
-        self.duration = params.pop('duration', self.duration)
-        self.SSRC = params.pop('SSRC', self.SSRC)
-        self.TS = params.pop('TS', self.TS)
-        self.numsamples = params.pop('numsamples', self.numsamples)
-        if self.numsamples is None:
-            try:
-                samplingrate = int(self.codec[1].split('/')[1])
-                self.numsamples = int(samplingrate * self.duration)
-            except:
-                raise Exception("missing 'timestamp' or 'numsamples' or sampling rate in codec name")
+        RTPStream.__init__(self, PT, rtplen, **params)
+        self.eof = False
 
     def nextpayload(self):
         return bytes((random.choice(range(256)) for _ in range(self.rtplen)))

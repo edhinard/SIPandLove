@@ -15,5 +15,6 @@ for log in loggers.values():
 
 from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
 from .Transport import Transport
-from .Media import RTPFile, RTPRandomStream
+from .Transaction import INVITEclientTransaction, ACKclientTransaction, NonINVITEclientTransaction, INVITEserverTransaction, ACKserverTransaction, NonINVITEserverTransaction
+from .Media import RTPFile, RTPStream, RTPRandomStream
 from .UA import SIPPhone

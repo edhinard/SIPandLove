@@ -1,16 +1,22 @@
 #coding: utf-8
 
+import collections
+
 import pyparsing as pp
 
 from .Utils import quote,unquote,ParameterDict
 
 class ParseException(Exception):
-    def __init__(self, msg, pos):
-        self.msg = msg
+    def __init__(self, name, value, pos):
+        self.name = name
+        self.value = value
         self.pos = pos
+    def __str__(self):
+        return "{!r} is not a valid {}. Error at pos={} ({})".format(self.value, self.name, self.pos, self.value[self.pos-1] if self.pos-1<len(self.value) else '')
 
 class Parser:
-    def __init__(self, ppParser):
+    def __init__(self, name, ppParser):
+        self.name = name
         self.parser = ppParser + pp.StringEnd()
         self.parser.leaveWhitespace()
         self.parser.setWhitespaceChars('')
@@ -19,7 +25,7 @@ class Parser:
         try:
             return self.parser.parseString(string)
         except pp.ParseException as e:
-            raise ParseException(e.msg, pos=e.col-1)
+            raise ParseException(self.name, string, e.col) from None
 
 #   Even though an arbitrary number of parameter pairs may be attached to
 #   a header field value, any given parameter-name MUST NOT appear more
@@ -232,9 +238,9 @@ quoted_string = pp.Suppress(SWS) + pp.quotedString
 #hname           =  1*( hnv-unreserved / unreserved / escaped )
 #hvalue          =  *( hnv-unreserved / unreserved / escaped )
 #hnv-unreserved  =  "[" / "]" / "/" / "?" / ":" / "+" / "$"
-user = pp.OneOrMore(pp.Word(unreserved+'&=+$,;?/') ^ escaped)
-password = pp.ZeroOrMore(pp.Word(unreserved+'&=+$,') ^ escaped)
-userinfo = user + pp.Optional(pp.Suppress(pp.Literal(':')) + password, None) + pp.Suppress(pp.Literal('@'))
+user = pp.Combine(pp.OneOrMore(pp.Word(unreserved+'&=+$,;?/') ^ escaped))
+password = pp.Combine(pp.ZeroOrMore(pp.Word(unreserved+'&=+$,') ^ escaped))
+userinfo = user('user') + pp.Optional(pp.Suppress(pp.Literal(':')) + password('password'), None) + pp.Suppress(pp.Literal('@'))
 domainlabel = pp.Word(pp.alphanums, pp.alphanums + '-') + pp.Optional(pp.Word(pp.alphanums, max=1))
 toplabel = pp.Word(pp.alphas, pp.alphanums + '-') + pp.Optional(pp.Word(pp.alphanums, max=1))
 hostname = pp.Combine(pp.ZeroOrMore(domainlabel + pp.Literal('.')) + toplabel + pp.Optional(pp.Literal('.')))
@@ -245,26 +251,24 @@ hexpart =  hexseq ^ (hexseq + pp.Literal('::') + pp.Optional(hexseq)) ^ (pp.Lite
 IPv6address =  pp.Combine(hexpart + pp.Optional(pp.Literal(':') + IPv4address))
 IPv6reference = pp.Combine(pp.Literal('[') + IPv6address +pp.Literal(']'))
 host =  hostname ^ IPv4address ^ IPv6reference
-hostport =  host + pp.Optional(pp.Suppress(pp.Literal(':')) + pp.Word(pp.nums), '')
+hostport =  host('host') + pp.Optional(pp.Suppress(pp.Literal(':')) + pp.Word(pp.nums)('port'))
 other_transport = token
-transport_param = pp.CaselessLiteral('transport=') + (pp.CaselessLiteral('udp') ^ pp.CaselessLiteral('tcp') ^ pp.CaselessLiteral('sctp') ^ pp.CaselessLiteral('tls') ^ other_transport)
+transport_param = pp.CaselessLiteral('transport') + pp.Suppress(pp.Literal('=')) + (pp.CaselessLiteral('udp') ^ pp.CaselessLiteral('tcp') ^ pp.CaselessLiteral('sctp') ^ pp.CaselessLiteral('tls') ^ other_transport)
 other_user =  token
-user_param =  pp.CaselessLiteral('user') + pp.Literal('=') + (pp.CaselessLiteral('phone') ^ pp.CaselessLiteral('ip') ^ other_user)
-method_param = pp.CaselessLiteral('method') + pp.Literal('=') + (pp.Literal('INVITE') ^ pp.Literal('ACK') ^ pp.Literal('OPTIONS') ^ pp.Literal('BYE') ^ pp.Literal('CANCEL') ^ pp.Literal('REGISTER') ^ token)
-ttl_param = pp.CaselessLiteral('ttl') + pp.Literal('=') + pp.Word(pp.nums, max=3)
-maddr_param = pp.CaselessLiteral('maddr') + pp.Literal('=') + host
-lr_param = pp.CaselessLiteral('lr')
+user_param =  pp.CaselessLiteral('user') + pp.Suppress(pp.Literal('=')) + (pp.CaselessLiteral('phone') ^ pp.CaselessLiteral('ip') ^ other_user)
+method_param = pp.CaselessLiteral('method') + pp.Suppress(pp.Literal('=')) + (pp.Literal('INVITE') ^ pp.Literal('ACK') ^ pp.Literal('OPTIONS') ^ pp.Literal('BYE') ^ pp.Literal('CANCEL') ^ pp.Literal('REGISTER') ^ token)
+ttl_param = pp.CaselessLiteral('ttl') + pp.Suppress(pp.Literal('=')) + pp.Word(pp.nums, max=3).setParseAction(lambda s,loc,toks:[int(toks[0])])
+maddr_param = pp.CaselessLiteral('maddr') + pp.Suppress(pp.Literal('=')) + host
+lr_param = pp.CaselessLiteral('lr').setParseAction(lambda s,loc,toks:['lr',None])
 pvalue = pname = pp.OneOrMore(pp.Word(unreserved+'[]/:&+$') ^ escaped)
-other_param = pname + pp.Optional(pp.Literal('=') + pvalue)
-uri_parameter = transport_param ^ user_param ^ method_param ^ ttl_param ^ maddr_param ^ lr_param ^ other_param
-uri_parameters = pp.ZeroOrMore(pp.Literal(';') + uri_parameter)
-hvalue = pp.ZeroOrMore(pp.Word(unreserved+'[]/?:+$') ^ escaped)
+other_param = pname + pp.Optional(pp.Suppress(pp.Literal('=')) + pvalue, None)
+uri_parameter = transport_param | user_param | method_param | ttl_param | maddr_param | lr_param | other_param
+uri_parameters = pp.ZeroOrMore(pp.Suppress(pp.Literal(';')) + uri_parameter)
+hvalue = pp.Optional(pp.OneOrMore(pp.Word(unreserved+'[]/?:+$') ^ escaped), None)
 hname = pp.OneOrMore(pp.Word(unreserved+'[]/?:+$') ^ escaped)
-header = hname + pp.Literal('=') + hvalue
-headers = pp.Literal('?') + header + pp.ZeroOrMore(pp.Literal('&') + header)
-
-SIP_URI  = pp.CaselessLiteral('sip')  + pp.Suppress(pp.Literal(':')) + pp.Optional(userinfo, None) + hostport + uri_parameters + pp.Optional(headers)
-SIPS_URI = pp.CaselessLiteral('sips') + pp.Suppress(pp.Literal(':'))+ pp.Optional(userinfo, None) + hostport + uri_parameters + pp.Optional(headers)
+header = hname + pp.Suppress(pp.Literal('=')) + hvalue
+headers = pp.Suppress(pp.Literal('?')) + header + pp.ZeroOrMore(pp.Suppress(pp.Literal('&')) + header)
+SIP_SIPS_URI  = (pp.CaselessLiteral('sips') | pp.CaselessLiteral('sip'))('scheme')  + pp.Suppress(pp.Literal(':')) + pp.Optional(userinfo) + hostport + uri_parameters('params') + pp.Optional(headers)('headers')
 
 
 #SIP-message    =  Request / Response
@@ -273,6 +277,8 @@ SIPS_URI = pp.CaselessLiteral('sips') + pp.Suppress(pp.Literal(':'))+ pp.Optiona
 #                  CRLF
 #                  [ message-body ]
 #Request-Line   =  Method SP Request-URI SP SIP-Version CRLF
+#- cf Message.py
+
 #Request-URI    =  SIP-URI / SIPS-URI / absoluteURI
 #absoluteURI    =  scheme ":" ( hier-part / opaque-part )
 #hier-part      =  ( net-path / abs-path ) [ "?" query ]
@@ -304,54 +310,38 @@ reg_name = pp.OneOrMore(pp.Word(unreserved+'$,;:@&=+') ^ escaped)
 srvr = pp.Optional(pp.Optional(userinfo) + hostport)
 authority = srvr ^ reg_name
 net_path = pp.Literal('//') + authority + pp.Optional(abs_path)
-hier_part = pp.Combine(net_path ^ abs_path) + pp.Optional(pp.Literal('?') + pp.Combine(query))
+hier_part = pp.Combine((net_path ^ abs_path) + pp.Optional(pp.Literal('?') + query))
 scheme = pp.Word(pp.alphas, pp.alphanums+'+-.')
-absoluteURI = scheme + pp.Suppress(pp.Literal(':')) + (hier_part ^ opaque_part)
-Request_URI = SIP_URI ^ SIPS_URI ^ absoluteURI
+absoluteURI = scheme('scheme') + pp.Suppress(pp.Literal(':')) + (hier_part ^ opaque_part)('opaque')
+Request_URI = SIP_SIPS_URI | absoluteURI
 
 class URI:
-    def __init__(self, valueorparseresult):
-        if isinstance(valueorparseresult, str):
-            res = Parser(Request_URI).parse(valueorparseresult)
+    def __init__(self, value):
+        if isinstance(value, str):
+            res = Parser('Request-URI', Request_URI).parse(value)
+        elif isinstance(value, URI):
+            res = value.__dict__
         else:
-            res = valueorparseresult
-        self.scheme = res.pop(0)
-        if self.scheme.startswith('sip'):
-            # SIP or SIPS URI
-            self.user = res.pop(0)
-            if self.user is None:
-                self.password = None
-            else:
-                self.password = res.pop(0)
-            self.host = res.pop(0)
-            port = res.pop(0)
-            if port == '':
-                self.port = None
-            else:
-                self.port = int(port)
-            self.params = ParameterDict()
-            while res and res[0] == ';':
-                res.pop(0)
-                k = res.pop(0)
-                if res and res[0] == '=':
-                    res.pop(0)
-                    v = res.pop(0)
-                else:
-                    v = None
-                self.params[k] = v
-            self.headers = ParameterDict()
-            if res:
-                res.pop(0) # it should be a '?'
-            while res:
-                k = res.pop(0)
-                res.pop(0) # it should be a '='
-                v =res.pop(0)
-                self.headers[k] = v
+            res = value
+
+        self.scheme = res['scheme']
+        self.user = res.get('user')
+        self.password = res.get('password')
+        self.host = res.get('host')
+        self.port = res.get('port')
+        params = res.get('params')
+        if params:
+            ks = params[0::2]; vs = params[1::2]
+            self.params = collections.OrderedDict(zip(ks,vs))
         else:
-            # absoluteURI
-            self.uri = res.pop(0)
-            self.query = res.pop(0) if res else None
-        assert len(res) == 0
+            self.params = collections.OrderedDict()
+        headers = res.get('headers')
+        if headers:
+            ks = headers[0::2]; vs = headers[1::2]
+            self.headers = collections.OrderedDict(zip(ks,vs))
+        else:
+            self.headers = collections.OrderedDict()
+        self.opaque = res.get('opaque')
     @property
     def userinfo(self):
         if self.user is None and self.password is None:
@@ -359,22 +349,29 @@ class URI:
         if self.password is None:
             return '{}@'.format(self.user)
         return '{}:{}@'.format(self.user or '', self.password)
+    @property
+    def hostport(self):
+        if self.port is None:
+            return self.host
+        else:
+            return '{}:{}'.format(self.host, self.port)
+    @property
+    def paramstr(self):
+        return ''.join((';{}{}'.format(k, '={}'.format(v) if v is not None else '') for k,v in self.params.items()))
+    @property
+    def headerstr(self):
+        if self.headers:
+            return '?' + '&'.join(('{}={}'.format(k, v) for k,v in self.headers.items()))
+        return ''
     def __str__(self):
         if self.scheme.startswith('sip'):
-            if self.port is None:
-                hostport = self.host
-            else:
-                hostport = '{}:{}'.format(self.host, self.port)
-            params = (';{}{}'.format(k, ('={}'.format(v) if v is not None else '') or '') for k,v in self.params.items())
-            headers = ('{}={}'.format(k, v) for k,v in self.headers.items())
-            return "{}:{}{}{}{}".format(self.scheme, self.userinfo, hostport, ''.join(params), '&'.join(headers) or '')
+            return "{}:{}{}{}{}".format(self.scheme, self.userinfo, self.hostport, self.paramstr, self.headerstr)
         else:
-            return "{}:{}{}".format(self.scheme, self.uri, "?{}".format(self.query) if self.query is not None else '')
+            return "{}:{}".format(self.scheme, self.opaque)
     def __repr__(self):
-        if self.scheme.startswith('sip'):
-            return "URI(scheme={!r}, userinfo={!r}, host={!r}, port={!r}, params={!r}, headers={!r})".format(self.scheme, self.userinfo, self.host, self.port, self.params, self.headers)
-        else:
-            return "URI(scheme={!r}, uri={!r}, query={!r})".format(self.scheme, self.uri, self.query)
+        return "URI({})".format(", ".join(["{}={!r}".format(k,v) for k,v in self.__dict__.items()]))
+
+
 #SIP-Version    =  "SIP" "/" 1*DIGIT "." 1*DIGIT
 #
 #message-header  =  (Accept
@@ -523,7 +520,7 @@ Method = pp.Literal('INVITE') ^ pp.Literal('ACK') ^ pp.Literal('OPTIONS') ^ pp.L
 #gen-value      =  token / host / quoted-string
 qvalue = pp.Combine((pp.Literal('0') + pp.Optional(pp.Literal('.') +  pp.Optional(pp.Word(pp.nums, max=3)))) ^ (pp.Literal('1') + pp.Optional(pp.Literal('.') +  pp.Optional(pp.Word('0', max=3)))))
 gen_value = token ^ host ^ quoted_string
-generic_param = token + pp.Optional(EQUAL + gen_value)
+generic_param = token + pp.Optional(pp.Suppress(EQUAL) + gen_value, None)
 
 
 #Accept-Encoding  =  "Accept-Encoding" HCOLON
@@ -571,7 +568,7 @@ generic_param = token + pp.Optional(EQUAL + gen_value)
 #other-response    =  auth-scheme LWS auth-param
 #                     *(COMMA auth-param)
 auth_param = token + pp.Suppress(EQUAL) + (token ^ quoted_string)
-Authorization = Parser(token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
+Authorization = Parser('(Proxy-)Authorization header', token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
 AuthorizationArgs = ('scheme', 'params')
 AuthorizationQuotedparams = ('username', 'realm', 'nonce', 'uri', 'response', 'cnonce', 'opaque')
 AuthorizationUnquotedparams = ('algorithm', 'qop', 'nc')
@@ -636,7 +633,7 @@ response_auth = pp.Literal('rspauth') + pp.Suppress(EQUAL) + pp.Suppress(LDQUOT)
 cnonce = pp.Literal('cnonce') + pp.Suppress(EQUAL) + quoted_string
 nonce_count = pp.Literal('nc') + pp.Suppress(EQUAL) + pp.Word(LHEX, exact=8)
 ainfo = pp.Group(nextnonce ^ message_qop ^ response_auth ^ cnonce ^ nonce_count)
-Authentication_Info = Parser(ainfo + pp.ZeroOrMore(pp.Suppress(COMMA) + ainfo))
+Authentication_Info = Parser('Authentication-Info header', ainfo + pp.ZeroOrMore(pp.Suppress(COMMA) + ainfo))
 Authentication_InfoArgs = ('params',)
 def Authentication_InfoParse(headervalue):
     for k,v in Authentication_Info.parse(headervalue):
@@ -649,7 +646,7 @@ Authentication_InfoMultiple = True
 #Call-ID  =  ( "Call-ID" / "i" ) HCOLON callid
 #callid   =  word [ "@" word ]
 callid = pp.Combine(word + pp.Optional(pp.Literal('@') + word))
-Call_ID = Parser(callid)
+Call_ID = Parser('Call-ID header', callid)
 Call_IDAlias = 'i'
 Call_IDArgs = ('callid',)
 def Call_IDParse(headervalue):
@@ -679,49 +676,44 @@ def Call_IDDisplay(ci):
 #c-p-expires        =  "expires" EQUAL delta-seconds
 #contact-extension  =  generic-param
 #delta-seconds      =  1*DIGIT
-addr_spec = pp.Group(SIP_URI ^ SIPS_URI ^ absoluteURI)
+addr_spec = SIP_SIPS_URI | absoluteURI
 tokenLWS = pp.Word(pp.alphanums + '-.!%*_+`\'~ \t')
-display_name = pp.Combine(tokenLWS) ^ quoted_string
-name_addr = pp.Optional(display_name, '') + pp.Suppress(LAQUOT) + addr_spec + pp.Suppress(RAQUOT)
-c_p_q = pp.CaselessLiteral('q') + EQUAL + qvalue
-delta_seconds =  pp.Word(pp.nums, min=1)
-c_p_expires = pp.CaselessLiteral('expires') + EQUAL + delta_seconds
-contact_params = c_p_q ^ c_p_expires  ^ generic_param
-contact_param = pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Suppress(SEMI) + contact_params))
+display_name = pp.Combine(tokenLWS) | quoted_string.setParseAction(lambda s,loc,toks:[unquote(toks[0])])
+name_addr = pp.Optional(display_name, None)('display') + pp.Suppress(LAQUOT)('aquot').setParseAction(lambda s,loc,toks:[True]) + addr_spec + pp.Suppress(RAQUOT)
+c_p_q = pp.CaselessLiteral('q') + pp.Suppress(EQUAL) + qvalue
+delta_seconds =  pp.Word(pp.nums, min=1).setParseAction(lambda s,loc,toks:[int(toks[0])])
+c_p_expires = pp.CaselessLiteral('expires') + pp.Suppress(EQUAL) + delta_seconds
+contact_params = c_p_q | c_p_expires  | generic_param
+contact_param = (name_addr | addr_spec) + pp.ZeroOrMore(pp.Suppress(SEMI) + contact_params)('hparams')
 
-Contact = Parser(STAR ^ (pp.Group(contact_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + contact_param))))
+Contact = Parser('Contact header', pp.Group(contact_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + contact_param)))
 ContactAlias = 'm'
 ContactArgs = ('display', 'address', 'params')
+def processaddrparsing(res):
+    display = res.get('display')
+    address = URI(res)
+    params = res.get('hparams')
+    if params:
+        ks = params[0::2]; vs = params[1::2]
+        params = collections.OrderedDict(zip(ks,vs))
+    else:
+        params = collections.OrderedDict()
+    if not res.get('aquot'):
+        params.update(address.params)
+        address.params = collections.OrderedDict()
+    return dict(display=display, address=address, params=params)
 def ContactParse(headervalue):
-    res = Contact.parse(headervalue)
-    if res[0] == '*':
-        yield dict(display=None, address='*', params={})
-        return
-    for addr,par in res:
-        if len(addr) == 2:
-            disp = unquote(addr.pop(0))
-        else:
-            disp = None
-        addr = URI(addr.pop(0))
-        params = {}
-        while par:
-            k = par.pop(0)
-            if par and par[0] == '=':
-                par.pop(0)
-                v = unquote(par.pop(0))
-                if k.lower() == 'expires':
-                    v = int(v)
-                params[k] = v
-            else:
-                params[k] = None
-        yield dict(display=disp, address=addr, params=params)
+    if headervalue.strip() == '*':
+        return dict(display=None, address='*', params=collections.OrderedDict())
+    for res in Contact.parse(headervalue):
+        yield processaddrparsing(res)
 ContactMultiple = True
 def ContactDisplay(contact):
     if contact.address == '*':
         return "*"
     if contact.display:
         addr = "{} <{}>".format(quote(contact.display), contact.address)
-    elif contact.params or contact.address.params:
+    elif contact.params or contact.address.params or (set(',;?') & set(str(contact.address))):
         addr = "<{}>".format(contact.address)
     else:
         addr = str(contact.address)
@@ -752,7 +744,7 @@ def ContactDisplay(contact):
 
 
 #Content-Length  =  ( "Content-Length" / "l" ) HCOLON 1*DIGIT
-Content_Length = Parser(pp.Word(pp.nums))
+Content_Length = Parser('Content-Length header', pp.Word(pp.nums))
 Content_LengthAlias = 'l'
 Content_LengthArgs = ('length',)
 def Content_LengthParse(headervalue):
@@ -778,7 +770,7 @@ def Content_LengthDisplay(cl):
 m_parameter = token + pp.Suppress(EQUAL) + (token ^ quoted_string)
 m_subtype = token
 m_type = token
-Content_Type = Parser(m_type + pp.Suppress(SLASH) + m_subtype + pp.ZeroOrMore(pp.Suppress(SEMI) + m_parameter))
+Content_Type = Parser('Content-Type header', m_type + pp.Suppress(SLASH) + m_subtype + pp.ZeroOrMore(pp.Suppress(SEMI) + m_parameter))
 Content_TypeAlias = 'c'
 Content_TypeArgs = ('type', 'subtype', 'params')
 def Content_TypeParse(headervalue):
@@ -797,7 +789,7 @@ def Content_TypeDisplay(ct):
 
 
 #CSeq  =  "CSeq" HCOLON 1*DIGIT LWS Method
-CSeq = Parser(pp.Word(pp.nums) + pp.Suppress(LWS) + Method)
+CSeq = Parser('CSeq header', pp.Word(pp.nums) + pp.Suppress(LWS) + Method)
 CSeqArgs = ('seq', 'method')
 def CSeqParse(headervalue):
     res = CSeq.parse(headervalue)
@@ -824,7 +816,7 @@ def CSeqDisplay(cseq):
 #error-uri   =  LAQUOT absoluteURI RAQUOT *( SEMI generic-param )
 #
 #Expires     =  "Expires" HCOLON delta-seconds
-Expires = Parser(delta_seconds)
+Expires = Parser('Expires header', delta_seconds)
 ExpiresArgs = ('delta',)
 def ExpiresParse(headervalue):
     return dict(delta=int(Expires.parse(headervalue)[0]))
@@ -836,35 +828,21 @@ def ExpiresDisplay(e):
 #               *( SEMI from-param )
 #from-param  =  tag-param / generic-param
 #tag-param   =  "tag" EQUAL token
-tag_param = pp.CaselessLiteral('tag') + EQUAL + token
-from_param = tag_param ^ generic_param
-From = Parser(pp.Group(name_addr ^ addr_spec) + pp.Group(pp.ZeroOrMore(pp.Suppress(SEMI) + from_param)))
+tag_param = pp.CaselessLiteral('tag') + pp.Suppress(EQUAL) + token
+from_param = tag_param | generic_param
+From = Parser('To/From header', (name_addr | addr_spec) + pp.ZeroOrMore(pp.Suppress(SEMI) + from_param)('hparams'))
 FromAlias = 'f'
 FromArgs = ('display', 'address', 'params')
 def FromParse(headervalue):
-    addr,par = From.parse(headervalue)
-    if len(addr) == 2:
-        disp = unquote(addr.pop(0))
-    else:
-        disp = None
-    addr = URI(addr.pop(0))
-    params = {}
-    while par:
-        k = par.pop(0)
-        if par and par[0] == '=':
-            par.pop(0)
-            v = unquote(par.pop(0))
-            params[k] = v
-        else:
-            params[k] = None
-    return dict(display=disp, address=addr, params=params)
+    res = From.parse(headervalue)
+    return processaddrparsing(res)
 FromDisplay = ContactDisplay
 
 
 #In-Reply-To  =  "In-Reply-To" HCOLON callid *(COMMA callid)
 #
 #Max-Forwards  =  "Max-Forwards" HCOLON 1*DIGIT
-Max_Forwards = Parser(pp.Word(pp.nums))
+Max_Forwards = Parser('Max-Forward header', pp.Word(pp.nums))
 Max_ForwardsArgs = ('max',)
 def Max_ForwardsParse(headervalue):
     return dict(max=int(Max_Forwards.parse(headervalue)[0]))
@@ -909,7 +887,7 @@ def Max_ForwardsDisplay(mf):
 #qop-options         =  "qop" EQUAL LDQUOT qop-value
 #                       *("," qop-value) RDQUOT
 #qop-value           =  "auth" / "auth-int" / token
-Proxy_Authenticate = Parser(token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
+Proxy_Authenticate = Parser('Proxy/WWW-Authenticate header', token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
 Proxy_AuthenticateArgs = AuthorizationArgs
 def Proxy_AuthenticateParse(headervalue):
     res = Proxy_Authenticate.parse(headervalue)
@@ -971,23 +949,21 @@ Proxy_AuthorizationDisplay = AuthorizationDisplay
 #Route        =  "Route" HCOLON route-param *(COMMA route-param)
 #route-param  =  name-addr *( SEMI rr-param )
 rr_param = generic_param
-route_param = name_addr + pp.ZeroOrMore(pp.Suppress(SEMI) + rr_param)
+route_param = name_addr + pp.ZeroOrMore(pp.Suppress(SEMI) + rr_param)('hparams')
 
-Route = Parser(pp.Group(route_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + route_param)))
+Route = Parser('Route header', pp.Group(route_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + route_param)))
 RouteArgs = ('display', 'address', 'params')
 def RouteParse(headervalue):
     for res in Route.parse(headervalue):
-        disp = res.pop(0)
-        addr = URI(res.pop(0))
-        params = {}
-        while res:
-            k = res.pop(0)
-            if res and res[0] == '=':
-                res.pop(0)
-                params[k] = res.pop(0)
-            else:
-                params[k] = None
-        yield dict(display=disp, address=addr, params=params)
+        display = res.get('display')
+        address = URI(res)
+        params = res.get('hparams')
+        if params:
+            ks = params[0::2]; vs = params[1::2]
+            params = collections.OrderedDict(zip(ks,vs))
+        else:
+            params = collections.OrderedDict()
+        yield dict(display=display, address=address, params=params)
 RouteMultiple = True
 RouteDisplay = ContactDisplay
 
@@ -1056,7 +1032,7 @@ protocol_name = pp.CaselessLiteral('SIP')
 sent_protocol = pp.Suppress(pp.Combine(protocol_name + SLASH + protocol_version + SLASH)) + transport
 via_parm = sent_protocol + pp.Suppress(LWS) + sent_by + pp.ZeroOrMore(SEMI + via_params)
 
-Via = Parser(pp.Optional(pp.Group(via_parm) + pp.ZeroOrMore(pp.Group(COMMA + via_parm))))
+Via = Parser('Via header', pp.Optional(pp.Group(via_parm) + pp.ZeroOrMore(pp.Group(COMMA + via_parm))))
 ViaAlias = 'v'
 ViaArgs = ('protocol', 'host', 'port', 'params')
 def ViaParse(headervalue):

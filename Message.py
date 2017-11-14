@@ -4,7 +4,6 @@ import re
 import base64
 import binascii
 import hashlib
-import copy
 import random
 import string
 import collections
@@ -189,7 +188,7 @@ class SIPMessage(object):
         via.params['branch'] = branch
     branch = property(_getbranch, _setbranch)
     def newbranch(self, tag=None):
-        self.branch = 'z9hG4bK{}{}'.format(tag or '_MYSIP_', self.randomstr())
+        self.branch = 'z9hG4bK_{}'.format(tag or self.randomstr())
 
     def _getfromtag(self):
         f = self.getheader('From')
@@ -247,24 +246,24 @@ class RequestMeta(type):
         
 class SIPRequest(SIPMessage, metaclass=RequestMeta):
     SIPrequestclasses = {}
+    tagprefix = 'SIPandLove'
+    tagsuffix = ''
     def __init__(self, uri, *headers, body=None, method=None, **kw):
         SIPMessage.__init__(self, *headers, body=body)
-        if isinstance(uri, SIPBNF.URI):
-            self.uri = copy.deepcopy(uri)
-        else:
-            try:
-                self.uri = SIPBNF.URI(uri)
-            except:
-                raise ValueError("{!r} is not a valid Request-URI".format(uri))
+        self.uri = SIPBNF.URI(uri)
         if method is not None:
-           self.method = method
-           self.METHOD = method.upper()
+            self.method = method
+            self.METHOD = method.upper()
 
         if not self.getheader('v'):
             self.addheaders(Header.Via(protocol='???',
                                        host='0.0.0.0',
                                        port=None,
                                        params={}))
+
+        if self.METHOD != 'REGISTER' and not self.hasheader('to'):
+            self.addheaders('To: {}'.format(uri))
+
         if self.branch is None:
             self.newbranch()
         if self.getheader('f') and self.fromtag is None:
@@ -278,8 +277,15 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
               self.addheaders(Header.CSeq(seq=random.randint(0,0x7fff),method=self.method))
 
     @staticmethod
+    def settagprefix(tag):
+        SIPRequest.tagprefix = tag
+    @staticmethod
+    def settagsuffix(tag):
+        SIPRequest.tagsuffix = tag
+
+    @staticmethod
     def randomstr(l=10):
-        return ''.join((random.choice(string.ascii_letters) for _ in range(l)))
+        return SIPRequest.tagprefix + '_' + ''.join((random.choice(string.ascii_letters) for _ in range(l))) + SIPRequest.tagsuffix
 
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
@@ -412,7 +418,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                            **kw)
         if code != 100 and resp.totag is None:
             if self.responsetotag is None:
-                self.responsetotag = ''.join((random.choice(string.ascii_letters) for _ in range(10)))
+                self.responsetotag = self.randomstr()
             resp.totag = self.responsetotag
         return resp
     
