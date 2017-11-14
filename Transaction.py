@@ -3,39 +3,106 @@
 
 import sys
 import threading
-import time
 import logging
 log = logging.getLogger('Transaction')
 
 from . import Message
+from . import Transport
 from . import Timer
 
-def clientidentifier(message):
-    if isinstance(message, Message.SIPRequest):
-        method = message.METHOD
-    else:
-        cseq = message.getheader('CSeq')
-        if cseq:
-            method = cseq.method.upper()
-        else:
-            method = None
-    return (message.branch, method)
-def serveridentifier(request):
-    if isinstance(request, Message.SIPResponse):
-        return
-    via = request.getheader('Via')
-    if via:
-        if via.port:
-            sentby = "{}:{}".format(via.host, via.port)
-        else:
-            sentby = via.host
-    else:
-        sentby = None
-    if isinstance(request, Message.ACK):
-        method = 'INVITE'
-    else:
-        method = request.METHOD
-    return (request.branch, sentby, method)
+class TransactionManager(threading.Thread):
+    def __init__(self, transport, T1=None, T2=None, T4=None):
+        threading.Thread.__init__(self, daemon=True)
+        Transport.errorcb = self.transporterror
+
+        self.transport = transport
+        self.T1 = T1 or .5
+        self.T2 = T2 or 4.
+        self.T4 = T4 or 5.
+        self.lock = threading.Lock()
+        self.transactions = []
+        allow = set(('ACK',))
+        for attr in dir(self):
+            if attr.endswith('_handler'):
+                method = attr[:-len('_handler')]
+                if method == method.upper():
+                    allow.add(method)
+        self.allow = 'Allow: {}'.format(', '.join(allow))
+        self.start()
+
+    def transporterror(self, err, addr, message):
+        with self.lock:
+            transaction = self.transactionmatching(message)
+            if transaction:
+                transaction.eventerror(message)
+
+    def newservertransaction(self, request):
+        with self.lock:
+            if isinstance(request, Message.INVITE):
+                transactionclass = INVITEserverTransaction
+            else:
+                transactionclass = NonINVITEserverTransaction
+            transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
+            self.transactions.append(transaction)
+            return transaction
+
+    def newclienttransaction(self, request, addr):
+        with self.lock:
+            if isinstance(request, Message.INVITE):
+                transactionclass = INVITEclientTransaction
+            else:
+                transactionclass = NonINVITEclientTransaction
+            transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+            self.transactions.append(transaction)
+            return transaction
+
+    def transactionmatching(self, message):
+        with self.lock:
+            for transaction in self.transactions:
+                if transaction.id == transaction.identifier(message):
+                    return transaction
+    def run(self):
+        while True:
+            message = self.transport.recv()
+            transaction = self.transactionmatching(message)
+            if transaction:
+                transaction.eventmessage(message)
+                if transaction.terminated:
+                    self.transactions.remove(transaction)
+                if isinstance(transaction, INVITEclientTransaction) \
+                   and transaction.finalresponse \
+                   and transaction.finalresponse.familycode == 2:
+                    ack = transaction.request.ack(message)
+                    addr = transaction.addr
+                    newtransaction = ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+                    self.transactions.append(newtransaction)
+                if isinstance(transaction, INVITEserverTransaction) \
+                   and transaction.finalresponse \
+                   and transaction.finalresponse.familycode == 2:
+                    response = transaction.finalresponse
+                    newtransaction = ACKserverTransaction(invite, self.transport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
+                    self.transactions.append(newtransaction)
+
+            else:
+                if isinstance(message, Message.SIPRequest) and message.METHOD != 'ACK':
+                    transaction = self.newservertransaction(message)
+                    handler = getattr(self, '{}_handler'.format(message.METHOD), None)
+                    if handler is None:
+                        transaction.eventmessage(message.response(405, self.allow))
+                    else:
+                        Handler(handler, transaction, message)
+
+class Handler(threading.Thread):
+    def __init__(self, handler, transaction, request):
+        threading.Thread.__init__(self, daemon=True)
+        self.handler = handler
+        self.transaction = transaction
+        self.request = request
+        self.start()
+    def run(self):
+        response = self.handler(self.request)
+        if response:
+            self.transaction.eventmessage(response)
 
 class Timeout(Exception):
     pass
@@ -126,6 +193,38 @@ class Transaction:
                     if self.state != state:
                         log.info(self)
 
+class ClientTransaction(Transaction):
+    @staticmethod
+    def identifier(message):
+        if isinstance(message, Message.SIPRequest):
+            method = message.METHOD
+        else:
+            cseq = message.getheader('CSeq')
+            if cseq:
+                method = cseq.method.upper()
+            else:
+                method = None
+        return (message.branch, method)
+
+class ServerTransaction(Transaction):
+    @staticmethod
+    def identifier(request):
+        if isinstance(request, Message.SIPResponse):
+            return
+        via = request.getheader('Via')
+        if via:
+            if via.port:
+                sentby = "{}:{}".format(via.host, via.port)
+            else:
+                sentby = via.host
+        else:
+            sentby = None
+        if isinstance(request, Message.ACK):
+            method = 'INVITE'
+        else:
+            method = request.METHOD
+        return (request.branch, sentby, method)
+
 #                               |INVITE from TU
 #             Timer A fires     |INVITE sent
 #             Reset A,          V                      Timer B fires
@@ -166,9 +265,7 @@ class Transaction:
 #                         +-----------+
 #
 #                 Figure 5: INVITE client transaction
-class INVITEclientTransaction(Transaction):
-    identifier = staticmethod(clientidentifier)
-
+class INVITEclientTransaction(ClientTransaction):
     def init(self):
         self.transport.send(self.request, self.addr)
         self.state = 'Calling'
@@ -240,9 +337,7 @@ class INVITEclientTransaction(Transaction):
 #                         | Terminated|<-----------------+
 #                         |           |
 #                         +-----------+
-class ACKclientTransaction(Transaction):
-    identifier = staticmethod(clientidentifier)
-
+class ACKclientTransaction(ClientTransaction):
     def init(self):
         self.transport.send(self.request, self.addr)
         self.state = 'Proceeding'
@@ -298,9 +393,7 @@ class ACKclientTransaction(Transaction):
 #         to take
 #
 #                 Figure 6: non-INVITE client transaction
-class NonINVITEclientTransaction(Transaction):
-    identifier = staticmethod(clientidentifier)
-
+class NonINVITEclientTransaction(ClientTransaction):
     def init(self):
         self.transport.send(self.request, self.addr)
         self.state = 'Trying'
@@ -394,9 +487,7 @@ class NonINVITEclientTransaction(Transaction):
 #                         +-----------+
 #
 #              Figure 7: INVITE server transaction
-class INVITEserverTransaction(Transaction):
-    identifier = staticmethod(serveridentifier)
-
+class INVITEserverTransaction(ServerTransaction):
     def init(self):
         self.lastresponse = self.request.response(100)
         self.state = 'Proceeding'
@@ -465,9 +556,7 @@ class INVITEserverTransaction(Transaction):
 #                         |           |
 #                         +-----------+
 
-class ACKserverTransaction(Transaction):
-    identifier = staticmethod(clientidentifier)
-
+class ACKserverTransaction(ServerTransaction):
     def __init__(self, *args, response2xx, **kwargs):
         Transaction.__init__(self, *args, **kwargs)
         self.lastresponse = response2xx
@@ -537,9 +626,7 @@ class ACKserverTransaction(Transaction):
 #                            +-----------+
 #
 #                Figure 8: non-INVITE server transaction
-class NonINVITEserverTransaction(Transaction):
-    identifier = staticmethod(serveridentifier)
-
+class NonINVITEserverTransaction(ServerTransaction):
     def init(self):
         self.state = 'Trying'
 
@@ -576,46 +663,19 @@ class NonINVITEserverTransaction(Transaction):
 
 
 if __name__ == '__main__':
+    import time
     import snl
     snl.loggers['Transaction'].setLevel('INFO')
 
-    class UA(threading.Thread):
-        def __init__(self):
-            threading.Thread.__init__(self, daemon=True)
-            snl.Transport.errorcb = self.transporterror
-            self.transport = snl.Transport('eno1', localport=5061)
-            self.transactions = {}
-            self.start()
-        def transporterror(self, err, addr, message):
-            id = clientidentifier(message)
-            assert(id == self.transaction.id)
-            self.transaction.eventerror(message)
-        def run(self):
-            while True:
-                message = self.transport.recv()
-                if isinstance(message, snl.SIPResponse):
-                    id = clientidentifier(message)
-                    assert(id in self.transactions)
-                    transaction = self.transactions[id]
-                    transaction.eventmessage(message)
-        def newtransaction(self, request, addr):
-            id = clientidentifier(request)
-            if isinstance(request, snl.INVITE):
-                transaction = snl.INVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
-            else:
-                transaction = snl.NonINVITEclientTransaction(request, self.transport, addr, T1=.5, T2=4., T4=5.)
-            self.transactions[id] = transaction
-            return transaction
-
-    ua = UA()
+    tm = TransactionManager(snl.Transport('eno1', localport=5061))
     req1 = snl.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu')
     req2 = snl.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu')
-    transaction1 = ua.newtransaction(req1, '194.2.137.40')
-    transaction2 = ua.newtransaction(req2, '194.2.137.40')
+    transaction1 = tm.newclienttransaction(req1, '194.2.137.40')
+    transaction2 = tm.newclienttransaction(req2, '194.2.137.40')
     print(transaction1.wait())
     print(transaction2.wait())
     time.sleep(5)
