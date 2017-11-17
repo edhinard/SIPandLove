@@ -36,11 +36,12 @@ class SIPPhone(Transaction.TransactionManager):
         self.contacturi.port = self.transport.localport
         self.credentials = credentials
         self.media = None
-        self.reg = Message.REGISTER(self.uri,
-                                    'From: {}'.format(self.addressofrecord),
-                                    'To: {}'.format(self.addressofrecord),
-                                    'Contact: {}'.format(self.contacturi),
-                                    self.allow)
+        self.reg = Message.REGISTER(
+            self.uri,
+            'From: {}'.format(self.addressofrecord),
+            'To: {}'.format(self.addressofrecord),
+            'Contact: {}'.format(self.contacturi)
+        )
 
     def __str__(self):
         return str(self.contacturi)
@@ -49,15 +50,16 @@ class SIPPhone(Transaction.TransactionManager):
         log.info("%s invited by %s", self, invite.getheader('f').address)
         if self.media is None:
             log.info("%s decline invitation", self)
-            return invite.response(603, self.allow)
+            return invite.response(603)
         self.media.setparticipantoffer(invite.body)
         self.media.transmit()
         log.info("%s accept invitation", self)
-        return invite.response(200,
-                               'Contact: {}'.format(self.contacturi),
-                               'c:application/sdp',
-                               self.allow,
-                               body=self.media.localoffer)
+        return invite.response(
+            200,
+            'Contact: {}'.format(self.contacturi),
+            'c:application/sdp',
+            body=self.media.localoffer
+        )
 
     def BYE_handler(self, bye):
         log.info("%s byed by %s", self, bye.getheader('f').address)
@@ -75,7 +77,7 @@ class SIPPhone(Transaction.TransactionManager):
             auth = message.authenticationheader(transaction.finalresponse, **self.credentials)
             if auth.header is None:
                 raise AuthenticationError(auth.error)
-            message.replaceoraddheaders(auth.header)
+            message.addheaders(auth.header, replace=True)
             message.newbranch()
             transaction = self.newclienttransaction(message, addr)
             transaction.wait()
@@ -89,11 +91,12 @@ class SIPPhone(Transaction.TransactionManager):
     
     def options(self):
         log.info("%s querying for capabilities", self)
-        options = Message.OPTIONS(self.uri,
-                                  'From: {}'.format(self.addressofrecord),
-                                  'To: {}'.format(self.addressofrecord),
-                                  self.allow,
-                                  'Content-Type: application/sdp')
+        options = Message.OPTIONS(
+            self.uri,
+            'From: {}'.format(self.addressofrecord),
+            'To: {}'.format(self.addressofrecord),
+            'Content-Type: application/sdp'
+        )
         try:
             finalresponse = self.authenticate(options, self.proxy)
         except Exception as e:
@@ -106,7 +109,7 @@ class SIPPhone(Transaction.TransactionManager):
             log.info("%s registering for %ds", self, expires)
         else:
             log.info("%s unregistering", self)
-        self.reg.replaceoraddheaders('Expires: {}'.format(expires))
+        self.reg.addheaders('Expires: {}'.format(expires), replace=True)
         try:
             finalresponse = self.authenticate(self.reg, self.proxy)
         except Exception as e:
@@ -127,11 +130,12 @@ class SIPPhone(Transaction.TransactionManager):
         return True
 
     def invite(self, touri, *headers):
-        invite = Message.INVITE(touri,
-                                'From: {}'.format(self.addressofrecord),
-                                'Contact: {}'.format(self.contacturi),
-                                self.allow,
-                                *headers)
+        invite = Message.INVITE(touri, *headers)
+        invite.addheaders(
+            'From: {}'.format(self.addressofrecord),
+            'Contact: {}'.format(self.contacturi),
+            ifabsent=True
+        )
         if self.media:
             invite.setbody(self.media.localoffer, 'application/sdp')
             log.info("%s inviting %s with SDP", self, touri)

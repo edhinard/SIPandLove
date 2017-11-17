@@ -31,12 +31,18 @@ def get_ip_address(ifname):
 
 
 class Transport(multiprocessing.Process):
-    def __init__(self, localiporinterface, localport=5060, tcp_only=False):
+    def __init__(self, localiporinterface, localport=None, tcp_only=False):
+        if ':' in localiporinterface:
+            localiporinterface,port = localiporinterface.split(':', 1)
+            port = int(port)
+            if localport is not None and localport != port:
+                raise Exception("two conflicting values for port between {!r}:{} and localport={}".format(localiporinterface, port, localport))
+            localport = port
         if not '.' in localiporinterface:
             self.localip = get_ip_address(localiporinterface)
         else:
             self.localip = localiporinterface
-        self.localport = localport
+        self.localport = localport or 5060
         self.tcp_only = tcp_only
         self.error = ErrorListener.newlistener(self.localip)
         self.pipe,self.childpipe = multiprocessing.Pipe()
@@ -64,9 +70,15 @@ class Transport(multiprocessing.Process):
             if len(addr) != 2:
                 raise Exception("expecting 2 values in addr, got {!r}".format(addr))
             ip,port = addr
+        elif isinstance(addr, str):
+            if ':' in addr:
+                ip,port = addr.split(':', 1)
+                port = int(port)
+            else:
+                ip = addr
+                port = 5060
         else:
-            ip = addr
-            port = 5060
+            raise Exception("expecting a 2uple or a string for addr, got {!r}".format(addr))
 
         via = message.getheader('via')
         if isinstance(message, Message.SIPRequest):

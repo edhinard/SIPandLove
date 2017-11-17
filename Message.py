@@ -136,11 +136,14 @@ class SIPMessage(object):
         if contenttype:
             self.addheaders('c:{}'.format(contenttype))
 
-    def addheaders(self, *headers):
+    def addheaders(self, *headers, replace=False, ifmissing=False):
+        if replace and ifmissing:
+            raise Exception("can't add headers with both replace=True and ifmissing=True")
+        if replace:
+            return self._headers.replaceoradd(*headers)
+        if ifmissing:
+            return self._headers.addifmissing(*headers)
         return self._headers.add(*headers)
-
-    def replaceoraddheaders(self, *headers):
-        return self._headers.replaceoradd(*headers)
 
     def getheaders(self, *names):
         return self._headers.getlist(*names)
@@ -212,6 +215,23 @@ class SIPMessage(object):
         t.params['tag'] = tag
     totag = property(_gettotag, _settotag)
 
+    def _getseq(self):
+        c = self.getheader('CSeq')
+        if c:
+            return c.seq
+    def _setseq(self, seq):
+        c = self.getheader('CSeq')
+        if not c:
+            raise Exception("missing Cseq header")
+        c.seq = seq
+    seq = property(_getseq, _setseq)
+
+    @property
+    def CseqMETHOD(self):
+        c = self.getheader('CSeq')
+        if c:
+            return c.method.upper()
+
     def tobytes(self, headerform='nominal'):
         ret = [self.startline(), b'\r\n']
         for header in self.getheaders():
@@ -222,7 +242,15 @@ class SIPMessage(object):
         return b''.join(ret)
 
     def __str__(self):
-        return self.tobytes().decode('utf-8')
+        try:
+            return self.tobytes().decode('utf-8')
+        except:
+            ret = [self.startline(), b'\r\n']
+            for header in self.getheaders():
+                ret.append(header.tobytes())
+                ret.append(b'\r\n')
+            ret.append(b'\r\n')
+            return b''.join(ret).decode('utf-8') + repr(self.body)[2:-1]
 
 class SIPResponse(SIPMessage):
     defaultreasons = {100:'Trying', 180:'Ringing', 181:'Call is Being Forwarded', 182:'Queued', 183:'Session in Progress', 199:'Early Dialog Terminated', 200:'OK', 202:'Accepted', 204:'No Notification', 300:'Multiple Choices', 301:'Moved Permanently', 302:'Moved Temporarily', 305:'Use Proxy', 380:'Alternative Service', 400:'Bad Request', 401:'Unauthorized', 402:'Payment Required', 403:'Forbidden', 404:'Not Found', 405:'Method Not Allowed', 406:'Not Acceptable', 407:'Proxy Authentication Required', 408:'Request Timeout', 409:'Conflict', 410:'Gone', 411:'Length Required', 412:'Conditional Request Failed', 413:'Request Entity Too Large', 414:'Request-URI Too Long', 415:'Unsupported Media Type', 416:'Unsupported URI Scheme', 417:'Unknown Resource-Priority', 420:'Bad Extension', 421:'Extension Required', 422:'Session Interval Too Small', 423:'Interval Too Brief', 424:'Bad Location Information', 428:'Use Identity Header', 429:'Provide Referrer Identity', 430:'Flow Failed', 433:'Anonymity Disallowed', 436:'Bad Identity-Info', 437:'Unsupported Certificate', 438:'Invalid Identity Header', 439:'First Hop Lacks Outbound Support', 470:'Consent Needed', 480:'Temporarily Unavailable', 481:'Call/Transaction Does Not Exist', 482:'Loop Detected.', 483:'Too Many Hops', 484:'Address Incomplete', 485:'Ambiguous', 486:'Busy Here', 487:'Request Terminated', 488:'Not Acceptable Here', 489:'Bad Event', 491:'Request Pending', 493:'Undecipherable', 494:'Security Agreement Required', 500:'Server Internal Error', 501:'Not Implemented', 502:'Bad Gateway', 503:'Service Unavailable', 504:'Server Time-out', 505:'Version Not Supported', 513:'Message Too Large', 580:'Precondition Failure', 600:'Busy Everywhere', 603:'Decline', 604:'Does Not Exist Anywhere', 606:'Not Acceptable'}
@@ -255,26 +283,33 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             self.method = method
             self.METHOD = method.upper()
 
-        if not self.getheader('v'):
-            self.addheaders(Header.Via(protocol='???',
-                                       host='0.0.0.0',
-                                       port=None,
-                                       params={}))
+        self.addheaders(
+            Header.Via(
+                protocol='???',
+                host='0.0.0.0',
+                port=None,
+                params={}
+            ),
+            ifmissing=True
+        )
 
-        if self.METHOD != 'REGISTER' and not self.hasheader('to'):
-            self.addheaders('To: {}'.format(uri))
+        if self.METHOD != 'REGISTER':
+            self.addheaders(
+                'To: {}'.format(uri),
+                ifmissing=True
+            )
 
         if self.branch is None:
             self.newbranch()
         if self.getheader('f') and self.fromtag is None:
             self.fromtag = self.randomstr()
         self.responsetotag = self.randomstr()
-        if not self.getheader('Max-Forwards'):
-              self.addheaders(Header.Max_Forwards(max=70))
-        if not self.getheader('i'):
-              self.addheaders(Header.Call_ID(callid=self.randomstr(20)))
-        if not self.getheader('CSeq'):
-              self.addheaders(Header.CSeq(seq=random.randint(0,0x7fff),method=self.method))
+        self.addheaders(
+            Header.Max_Forwards(max=70),
+            Header.Call_ID(callid=self.randomstr(20)),
+            Header.CSeq(seq=random.randint(0,0x7fff), method=self.METHOD),
+            ifmissing=True
+        )
 
     @staticmethod
     def settagprefix(tag):

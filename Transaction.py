@@ -7,27 +7,32 @@ import logging
 log = logging.getLogger('Transaction')
 
 from . import Message
-from . import Transport
 from . import Timer
+from . import Transport
+import snl
 
 class TransactionManager(threading.Thread):
     def __init__(self, transport, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
         Transport.errorcb = self.transporterror
 
-        self.transport = transport
+        if isinstance(transport, snl.Transport):
+            self.transport = transport
+        else:
+            self.transport = snl.Transport(transport)
         self.T1 = T1 or .5
         self.T2 = T2 or 4.
         self.T4 = T4 or 5.
         self.lock = threading.Lock()
         self.transactions = []
-        allow = set(('ACK',))
+        self.allow = set()
         for attr in dir(self):
             if attr.endswith('_handler'):
                 method = attr[:-len('_handler')]
                 if method == method.upper():
-                    allow.add(method)
-        self.allow = 'Allow: {}'.format(', '.join(allow))
+                    self.allow.add(method)
+        if 'INVITE' in self.allow:
+            self.allow.add('ACK')
         self.start()
 
     def transporterror(self, err, addr, message):
@@ -52,6 +57,11 @@ class TransactionManager(threading.Thread):
                 transactionclass = INVITEclientTransaction
             else:
                 transactionclass = NonINVITEclientTransaction
+            if request.METHOD not in ('ACK', 'CANCEL') and self.allow:
+                request.addheaders(
+                    'Allow: {}'.format(', '.join(self.allow)),
+                    ifabsent=True
+                )
             transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
             return transaction
@@ -88,7 +98,12 @@ class TransactionManager(threading.Thread):
                     transaction = self.newservertransaction(message)
                     handler = getattr(self, '{}_handler'.format(message.METHOD), None)
                     if handler is None:
-                        transaction.eventmessage(message.response(405, self.allow))
+                        response = message.response(405)
+                        if self.allow:
+                            response.addheaders(
+                                'Allow: {}'.format(', '.join(self.allow))
+                            )
+                        transaction.eventmessage(response)
                     else:
                         Handler(handler, transaction, message)
 
@@ -102,6 +117,11 @@ class Handler(threading.Thread):
     def run(self):
         response = self.handler(self.request)
         if response:
+            if response.CseqMETHOD not in ('ACK', 'CANCEL') and self.allow:
+                response.addheaders(
+                    'Allow: {}'.format(', '.join(self.allow)),
+                    ifabsent=True
+                )
             self.transaction.eventmessage(response)
 
 class Timeout(Exception):

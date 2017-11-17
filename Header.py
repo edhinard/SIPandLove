@@ -24,6 +24,17 @@ class Headers:
         self._headers.extend(headers)
         return headers
 
+    def addifmissing(self, *headers, strictparsing=True):
+        headers,errors = Headers.parse(*headers, strictparsing=strictparsing)
+        self.errors.extend(errors)
+        for header in headers:
+            name = header._indexname
+            try:
+                dummy = self.nindex(name, 1)
+            except:
+                self._headers.append(header)
+        return headers
+
     def replaceoradd(self, *headers, strictparsing=True):
         headers,errors = Headers.parse(*headers, strictparsing=strictparsing)
         self.errors.extend(errors)
