@@ -9,6 +9,7 @@ log = logging.getLogger('Transaction')
 from . import Message
 from . import Timer
 from . import Transport
+from . import Dialog
 import snl
 
 class TransactionManager(threading.Thread):
@@ -47,11 +48,19 @@ class TransactionManager(threading.Thread):
                 transactionclass = INVITEserverTransaction
             else:
                 transactionclass = NonINVITEserverTransaction
+#            request.dialog = Dialog.Dialog(request)
             transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
             return transaction
 
-    def newclienttransaction(self, request, addr):
+    def newclienttransaction(self, request, addr=None):
+#        if request.dialog:
+#            if addr is None:
+#                addr = request.dialog.addr
+#        else:
+#            if addr is None:
+#                raise Exception("Missing addr for non in-Dialog request")
+#            request.dialog = Dialog.Dialog(request, addr)
         with self.lock:
             if isinstance(request, Message.INVITE):
                 transactionclass = INVITEclientTransaction
@@ -60,7 +69,7 @@ class TransactionManager(threading.Thread):
             if request.METHOD not in ('ACK', 'CANCEL') and self.allow:
                 request.addheaders(
                     'Allow: {}'.format(', '.join(self.allow)),
-                    ifabsent=True
+                    ifmissing=True
                 )
             transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
@@ -94,7 +103,9 @@ class TransactionManager(threading.Thread):
                     self.transactions.append(newtransaction)
 
             else:
-                if isinstance(message, Message.SIPRequest) and message.METHOD != 'ACK':
+                if isinstance(message, Message.SIPResponse):
+                    pass
+                elif message.METHOD != 'ACK':
                     transaction = self.newservertransaction(message)
                     handler = getattr(self, '{}_handler'.format(message.METHOD), None)
                     if handler is None:
@@ -105,11 +116,14 @@ class TransactionManager(threading.Thread):
                             )
                         transaction.eventmessage(response)
                     else:
-                        Handler(handler, transaction, message)
+                        Handler(self, handler, transaction, message)
+                else:
+                    pass
 
 class Handler(threading.Thread):
-    def __init__(self, handler, transaction, request):
+    def __init__(self, transactionmanager, handler, transaction, request):
         threading.Thread.__init__(self, daemon=True)
+        self.allow = transactionmanager.allow
         self.handler = handler
         self.transaction = transaction
         self.request = request
@@ -120,7 +134,7 @@ class Handler(threading.Thread):
             if response.CseqMETHOD not in ('ACK', 'CANCEL') and self.allow:
                 response.addheaders(
                     'Allow: {}'.format(', '.join(self.allow)),
-                    ifabsent=True
+                    ifmissing=True
                 )
             self.transaction.eventmessage(response)
 
@@ -133,6 +147,7 @@ class Transaction:
     def __init__(self, request, transport, addr=None, *, T1, T2, T4):
         self.id = self.identifier(request)
         self.request = request
+#        self.dialog = request.dialog
         self.transport = transport
         self.addr = addr
         self.T1 = T1

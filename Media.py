@@ -16,7 +16,6 @@ log = logging.getLogger('Media')
 class Media(multiprocessing.Process):
     def __init__(self, localip, localport, rtp, owner=None):
         self.localip = localip
-        self.localport = localport or 0
         self.remoteip = None
         self.remoteport = None
         if rtp is None:
@@ -34,17 +33,11 @@ class Media(multiprocessing.Process):
         self.pipe,self.childpipe = multiprocessing.Pipe()
 
         multiprocessing.Process.__init__(self, daemon=True)
-        self.transmitting = False
         self.start()
-        ret = self.pipe.recv()
-        if not isinstance(ret, int):
-            log.error(ret)
-            raise ret
-        self.localport = ret
-        log.debug("%s starting process %d", self, self.pid)
+        log.debug("%s starting process", self)
 
     def __str__(self):
-        return "{}:{}".format(self.localip, self.localport)
+        return "pid:{}".format(self.pid)
 
     @property
     def localoffer(self):
@@ -61,9 +54,16 @@ class Media(multiprocessing.Process):
         sdplines.append('')
         return '\r\n'.join(sdplines)
 
+    def opensocket(self, localport=0):
+        self.pipe.send(('nextsocket', localport))
+        localportorexc = self.pipe.recv()
+        if not isinstance(localportorexc, int):
+            log.error(localportorexc)
+            raise localportorexc
+        self.localport = localportorexc
+        return self.localport
+    
     def setparticipantoffer(self, sdp):
-        if self.transmitting:
-            return
         for line in sdp.splitlines():
             if line.startswith(b'c='):
                 self.remoteip = line.split()[2]
@@ -71,79 +71,117 @@ class Media(multiprocessing.Process):
                 self.remoteport = int(line.split()[1])
 
     def transmit(self):
-        if self.transmitting:
-            return
-        self.transmitting = True
         if self.remoteip is not None and self.remoteport is not None:
-            self.pipe.send((self.remoteip, self.remoteport))
+            self.pipe.send(('start',(self.remoteip, self.remoteport)))
+            self.pipe.recv()
+            log.info("%s start transmitting %s:%d", self, self.localip, self.localport)
         else:
             log.warning("missing participant offer")
 
     def stop(self):
-        self.pipe.send(None)
+        self.pipe.send(('stop', None))
 
-    def wait(self):
-        self.pipe.recv()
+#    def wait(self):
+#        self.pipe.recv()
 
     def run(self):
-        # create socket
-        # bind it
-        # get binded port and send it to parent process
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind((self.localip, self.localport))
-        except OSError as err:
-            exc = Exception("cannot bind UDP socket to {}. errno={}".format(self.localip, errno.errorcode[err.errno]))
-            self.childpipe.send(exc)
-            return
-        except Exception as e:
-            self.childpipe.send(e)
-            return
-        self.localport = sock.getsockname()[1]
-        self.childpipe.send(self.localport)
-
-        # wait for parent process to give remote address
-        remoteaddr = self.childpipe.recv()
-        if not remoteaddr:
-            self.childpipe.send(None)
-            return
-
-        # send content of RTP file and discard incoming datagrams
-        wakeuptime = time.monotonic() # initial wakeup time is now
         running = True
-        log.info("%s Starting", self)
-        while running:
-            currenttime = time.monotonic()
-            if self.rtp is None:
-                sleep = None
-            elif wakeuptime <= currenttime:
-                sleep = 0
-            else:
-                sleep = wakeuptime - currenttime
+        transmitting = False
+        currentsock = nextsock = None
 
-            # wait for incoming data from socket or wakeup time
+        while running:
+            # compute sleep time
+            #  it depends on state:
+            #   -not transmitting -> infinite = wakeup only on incomming data from pipe or socket
+            #   -transmitting and wakeup time in the past -> 0 = no sleep = immediate processing
+            #   -transmitting and wakeup time in the future -> wakeup time - current time
+            currenttime = time.monotonic()
+            if not transmitting:
+                sleep = None
+            else:
+                if wakeuptime <= currenttime:
+                    sleep = 0
+                else:
+                    sleep = wakeuptime - currenttime
+
+            # wait for incomming data or timeout
             obj = None
-            for obj in multiprocessing.connection.wait([sock, self.childpipe], sleep):
-                if obj == sock:
-                    # incoming data
-                    buf,addr = sock.recvfrom(65536)
-                    rtp = RTP.frombytes(buf)
-                    log.info("%s <-- %s", self, rtp)
+            if currentsock:
+                objs = [currentsock, self.childpipe]
+            else:
+                objs = [self.childpipe]
+            for obj in multiprocessing.connection.wait(objs, sleep):
+                if obj == currentsock:
+                    # incoming data from socket
+                    #  if not transmitting: discard data
+                    #  else ... discard data (and log)
+                    buf,addr = currentsock.recvfrom(65536)
+                    if transmitting:
+                        rtp = RTP.frombytes(buf)
+                        log.info("%s <-- %s", self, rtp)
+                        
                 elif obj == self.childpipe:
-                    self.childpipe.recv()
-                    running = False
+                    # incomming data from pipe = command from main program. possible commands:
+                    #  -nextsocket + preferedport:
+                    #     create new socket, bind it and
+                    #     return its local port
+                    #  -start + remoteaddr:
+                    #     delete current socket if any
+                    #     next socket becomes current one
+                    #     start transmitting
+                    #     return ack
+                    #  -stop:
+                    #     stop transmitting and delete current socket if any
+                    #     stop process
+                    #     return ack
+                    command,param = self.childpipe.recv()
+                    if command == 'nextsocket':
+                        localport = param
+                        nextsock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        nextsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        try:
+                            nextsock.bind((self.localip, localport))
+                            localport = nextsock.getsockname()[1]
+                        except OSError as err:
+                            exc = Exception("cannot bind UDP socket to {}. errno={}".format(self.localip, errno.errorcode[err.errno]))
+                            self.childpipe.send(exc)
+                        except Exception as exc:
+                            self.childpipe.send(exc)
+                        else:
+                            self.childpipe.send(localport)
+
+                    elif command == 'start':
+                        if nextsock is None:
+                            exc = Exception("no open socket, cannot start")
+                            self.childpipe.send(exc)
+                            continue
+                        if currentsock:
+                            currentsock.close()
+                        currentsock = nextsock
+                        transmitting = True
+                        remoteaddr = param
+                        wakeuptime = time.monotonic()
+                        nextsock = None
+                        self.childpipe.send(localport)
+                        
+                    elif command == 'stop':
+                        if currentsock:
+                            currentsock.close()
+                        if nextsock:
+                            nextsock.close()
+                        running = False
+                        self.childpipe.send(True)
+
             if obj is None:
+                # timeout
                 # time to send next RTP packet if there is one
-                if not self.rtp.eof:
+                if transmitting and not self.rtp.eof:
                     rtp,duration = self.rtp.nextpacket()
-                    sock.sendto(rtp.tobytes(), remoteaddr)
+                    currentsock.sendto(rtp.tobytes(), remoteaddr)
                     log.info("%s --> %s", self, rtp)
                     wakeuptime += duration
-
-        # unlock waiting parent process
-        self.childpipe.send(None)
-        log.info("%s Stopping", self)
+                
+#        log.info("%s Stopping", self)
 
 class RTP:
     def __init__(self, payload, PT, seq, TS, SSRC, version=2, P=0, X=0, CC=0, M=0):

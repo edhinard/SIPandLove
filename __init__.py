@@ -13,8 +13,9 @@ for log in loggers.values():
     log.addHandler(loghandler)
 
 
+from .SIPBNF import URI
 from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
 from .Transport import Transport
 from .Transaction import TransactionManager
-from .Media import RTPFile, RTPStream, RTPRandomStream
+from .Media import Media, RTPFile, RTPStream, RTPRandomStream
 from .UA import SIPPhone

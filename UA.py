@@ -10,6 +10,7 @@ from . import SIPBNF
 from . import Message
 from . import Transaction
 from . import Media
+import snl
 
 class AuthenticationError(Exception):
     def __init__(self, message):
@@ -134,7 +135,7 @@ class SIPPhone(Transaction.TransactionManager):
         invite.addheaders(
             'From: {}'.format(self.addressofrecord),
             'Contact: {}'.format(self.contacturi),
-            ifabsent=True
+            ifmissing=True
         )
         if self.media:
             invite.setbody(self.media.localoffer, 'application/sdp')
@@ -179,7 +180,8 @@ class SIPPhone(Transaction.TransactionManager):
         log.info("%s bying ok", self)
 
     def setmedia(self, rtpfile, mediaip=None, mediaport=None):
-        self.media = Media.Media(mediaip or self.transport.localip, mediaport, rtpfile, owner=self.transport.localip)
+        self.media = snl.Media(mediaip or self.transport.localip, mediaport, rtpfile, owner=self.transport.localip)
+        self.media.opensocket(mediaport)
         return self.media
 
 class Dialog:
