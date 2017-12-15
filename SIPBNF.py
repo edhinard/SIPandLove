@@ -567,7 +567,7 @@ generic_param = token + pp.Optional(pp.Suppress(EQUAL) + gen_value, None)
 #auth-param-name   =  token
 #other-response    =  auth-scheme LWS auth-param
 #                     *(COMMA auth-param)
-auth_param = token + pp.Suppress(EQUAL) + (token ^ quoted_string)
+auth_param = token + pp.Suppress(EQUAL) + (token ^ pp.QuotedString('"', unquoteResults=False))
 Authorization = Parser('(Proxy-)Authorization header', token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
 AuthorizationArgs = ('scheme', 'params')
 AuthorizationQuotedparams = ('username', 'realm', 'nonce', 'uri', 'response', 'cnonce', 'opaque')
@@ -576,9 +576,7 @@ def AuthorizationParse(headervalue):
     res = Authorization.parse(headervalue)
     scheme = res.pop(0)
     params = ParameterDict()
-    while res:
-        k = res.pop(0)
-        v = res.pop(0).strip()
+    for k,v in zip(res[0::2], res[1::2]):
         if scheme.lower()=='digest':
             if k.lower() in AuthorizationQuotedparams:
                 if not (v.startswith('"') and v.endswith('"')):
@@ -599,8 +597,6 @@ def AuthorizationParse(headervalue):
                     raise Exception("unexpected quotes around {} value".format(k))
                 if k.lower() == 'nc':
                     v = int(pp.Word(LHEX, exact=8).parseString(v)[0], 16)
-        else:
-            v = unquote(v)
         params[k] = v
     return dict(scheme=scheme, params=params)
 def AuthorizationDisplay(authorization):
@@ -616,7 +612,7 @@ def AuthorizationDisplay(authorization):
                 v = quote(v)
             params.append("{}={}".format(k,v))
     else:
-        params = ("{}={}".format(k,quote(v)) for k,v in authorization.params.items())
+        params = ("{}={}".format(k,v) for k,v in authorization.params.items())
     return "{} {}".format(authorization.scheme, ','.join(params))
 
 #Authentication-Info  =  "Authentication-Info" HCOLON ainfo
@@ -889,34 +885,47 @@ def Max_ForwardsDisplay(mf):
 #qop-value           =  "auth" / "auth-int" / token
 Proxy_Authenticate = Parser('Proxy/WWW-Authenticate header', token + pp.Suppress(LWS) + auth_param + pp.ZeroOrMore(pp.Suppress(COMMA) + auth_param))
 Proxy_AuthenticateArgs = AuthorizationArgs
+Proxy_AuthenticateQuotedparams = ('realm', 'domain', 'nonce', 'opaque', 'qop')
+Proxy_AuthenticateUnquotedparams = ('algorithm', 'stale')
 def Proxy_AuthenticateParse(headervalue):
     res = Proxy_Authenticate.parse(headervalue)
     scheme = res.pop(0)
     params = ParameterDict()
-    while res:
-        k = res.pop(0)
-        v = res.pop(0).strip()
+    for k,v in zip(res[0::2], res[1::2]):
         if scheme.lower()=='digest':
-            if k.lower() in ('realm', 'domain', 'nonce', 'opaque', 'qop'):
+            if k.lower() in Proxy_AuthenticateQuotedparams:
                 if not (v.startswith('"') and v.endswith('"')):
                     raise Exception("quotes expected around {} value".format(k))
                 if k.lower() == 'domain':
                     v = URI(v[1:-1]) # TODO - should be a whitespace separated list of URI 
                 else:
                     v = unquote(v)
-            elif k.lower() in ('algorithm', 'stale'):
+            elif k.lower() in Proxy_AuthenticateUnquotedparams:
+                if v.startswith('"') or v.endswith('"'):
+                    raise Exception("unexpected quotes around {} value".format(k))
                 if k.lower() == 'stale':
-                    if v.lower() not in ('true', 'false'):
+                    if v.lower() == 'true':
+                        v = True
+                    elif v.lower() == 'false':
+                        v = False
+                    else:
                         raise Exception("stale value should be 'true' or 'false'")
-        else:
-            v = unquote(v)
         params[k] = v
     return dict(scheme=scheme, params=params)
 def Proxy_AuthenticateDisplay(authenticate):
     if authenticate.scheme.lower() == 'digest':
-        params = ("{}={}".format(k,quote(str(v),True) if k.lower() not in ('algorithm','stale') else v) for k,v in authenticate.params.items())
+        params = []
+        for k,v in authorization.params.items():
+            if v is None: continue
+            if k.lower() in Proxy_AuthenticateQuotedparams:
+                v = quote(str(v), True)
+            elif k.lower() == 'stale':
+                v = 'true' if v else 'false'
+            elif k.lower() not in Proxy_AuthenticateUnquotedparams:
+                v = quote(v)
+            params.append("{}={}".format(k,v))
     else:
-        params = ("{}={}".format(k,quote(v)) for k,v in authenticate.params.items())
+        params = ("{}={}".format(k,v) for k,v in authenticate.params.items())
     return "{} {}".format(authenticate.scheme, ','.join(params))
 
 
@@ -1032,7 +1041,7 @@ protocol_name = pp.CaselessLiteral('SIP')
 sent_protocol = pp.Suppress(pp.Combine(protocol_name + SLASH + protocol_version + SLASH)) + transport
 via_parm = sent_protocol + pp.Suppress(LWS) + sent_by + pp.ZeroOrMore(SEMI + via_params)
 
-Via = Parser('Via header', pp.Optional(pp.Group(via_parm) + pp.ZeroOrMore(pp.Group(COMMA + via_parm))))
+Via = Parser('Via header', pp.Group(via_parm) + pp.ZeroOrMore(pp.Group(COMMA + via_parm)))
 ViaAlias = 'v'
 ViaArgs = ('protocol', 'host', 'port', 'params')
 def ViaParse(headervalue):

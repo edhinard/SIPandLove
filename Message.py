@@ -33,6 +33,9 @@ class DecodeInfo:
         self.framing = False
         self.error = None
 
+    def __str__(self):
+        return "decodeinfo: status={0.status} error={0.error} class={0.klass}".format(self)
+
     def finish(self):
         rawheaders=self.buf[self.iheaders:self.iblank]
         body=self.buf[self.ibody:self.iend]
@@ -51,13 +54,12 @@ class SIPMessage(object):
     def frombytes(buf):
         decodeinfo = SIPMessage.predecode(buf)
         if decodeinfo.status == 'OK':
-            log.debug("Successful message parsing\n%r", buf)
             return decodeinfo.finish()
-        log.debug("Error %r on message parsing\n%r", decodeinfo.error, buf)
         return None
     
     @staticmethod
     def predecode(buf):
+        log.debug("predecode(%r)", buf)
         decodeinfo = DecodeInfo(buf)
 
         # Valid messages:
@@ -70,6 +72,7 @@ class SIPMessage(object):
         statusline = STATUS_LINE_RE.search(buf)
         requestline = REQUEST_LINE_RE.search(buf)
         if not statusline and not requestline:
+            log.debug(decodeinfo)
             return decodeinfo
         s_start = statusline.start() if statusline else len(buf)
         r_start = requestline.start() if requestline else len(buf)
@@ -80,6 +83,7 @@ class SIPMessage(object):
             except UnicodeError as err:
                 decodeinfo.error = "UTF-8 encoding error ({} {!r}) in Reason-Phrase: {!r}".format(err.reason, err.object[err.start:err.end], reason)
                 decodeinfo.status = 'ERROR'
+                log.debug(decodeinfo)
                 return decodeinfo
             decodeinfo.istart = s_start
             decodeinfo.iheaders =  statusline.end()
@@ -92,6 +96,7 @@ class SIPMessage(object):
             except:
                 decodeinfo.error = "ASCII encoding error in Request-URI: {!r}".format(requesturi)
                 decodeinfo.status = 'ERROR'
+                log.debug(decodeinfo)
                 return decodeinfo
             decodeinfo.requesturi = requesturi
             decodeinfo.istart = r_start
@@ -118,6 +123,7 @@ class SIPMessage(object):
                     if contentlength > decodeinfo.iend - decodeinfo.ibody:
                         decodeinfo.status = 'TRUNCATED'
 
+        log.debug(decodeinfo)
         return decodeinfo
     
     def __init__(self, *headers, body):
@@ -259,6 +265,9 @@ class SIPResponse(SIPMessage):
         self.code = code
         self.familycode = code // 100
         self.reason = reason if reason is not None else self.defaultreasons.get(code, '')
+        if log.isEnabledFor(logging.INFO):
+            headers = '\n   '.join(str(h) for h in self._headers)
+            log.info("Response:\n   code={} reason={}\n   {}".format(self.code, self.reason, headers))
 
     def startline(self):
         return 'SIP/2.0 {} {}'.format(self.code, self.reason).encode('utf-8')
@@ -310,6 +319,9 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             Header.CSeq(seq=random.randint(0,0x7fff), method=self.METHOD),
             ifmissing=True
         )
+        if log.isEnabledFor(logging.INFO):
+            headers = '\n   '.join(str(h) for h in self._headers)
+            log.info("Request:\n   method={} uri={}\n   {}".format(self.method, self.uri, headers))
 
     @staticmethod
     def settagprefix(tag):
@@ -326,11 +338,11 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
 
     def authenticationheader(self, response, nc=1, cnonce=None, **kwargs):
-        Auth = collections.namedtuple('Auth', 'header extra message')
+        Auth = collections.namedtuple('Auth', 'header extra error')
         Auth.__new__.__defaults__ = ({}, None)
-        authenticates = response.getheaders('WWW-Authenticate', 'Proxy-Authenticate')
+        authenticates = list(response.getheaders('WWW-Authenticate', 'Proxy-Authenticate'))
         if not authenticates:
-            return Auth(header=None, error="missing WWW|Proxy-Authenticate header")
+            return Auth(header=None, error="missing WWW|Proxy-Authenticate header in response")
 
         for authenticate in authenticates:
             extra = {}

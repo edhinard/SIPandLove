@@ -14,7 +14,7 @@ import snl
 
 class AuthenticationError(Exception):
     def __init__(self, message):
-        self.message
+        self.message = message
     def __str__(self):
         return self.message
 
@@ -73,7 +73,7 @@ class SIPPhone(Transaction.TransactionManager):
         message.getheader('CSeq').seq += 1
         transaction = self.newclienttransaction(message, addr)
         transaction.wait()
-        if transaction.finalresponse and transaction.finalresponse.code in (401, 407):
+        if transaction.finalresponse and transaction.finalresponse.code in (401, 407) and self.credentials:
             log.info("%s %s needs authentication", self, message.METHOD)
             auth = message.authenticationheader(transaction.finalresponse, **self.credentials)
             if auth.header is None:

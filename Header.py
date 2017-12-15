@@ -244,20 +244,26 @@ class Header(metaclass=HeaderMeta):
     @staticmethod
     def parse(rawheader):
         if rawheader[0] == b'#'[0]:
+            log.debug("{!r} --> Byteheader".format(rawheader))
             return [Byteheader(rawheader[1:])]
 
         #
         # Check that header content is a valid UTF-8 string
         #  raise UnicodeError
-        headerstring = rawheader.decode('utf-8')
+        try:
+            headerstring = rawheader.decode('utf-8')
+        except:
+            log.warning("Parsing error on {!r}: not an UTF-8 string".format(rawheader))
+            raise
 
         #
-        # Parse the header: "^ name [WSP] : value $"
+        # Parse the header: "^ name [WSP] HCOLON value $"
         #
         try:
             name,value = Header.HEADER_RE.match(headerstring).groups()
             value = value.strip()
         except:
+            log.warning("Parsing error on {!r}: does not match 'name HCOLON value'".format(rawheader))
             raise Exception("Expecting: header-name HCOLON header-value. Got {!r}".format(headerstring))
 
         #
@@ -270,14 +276,19 @@ class Header(metaclass=HeaderMeta):
         #  raise SIPBNF.ParseException
         cls = Header.SIPheaderclasses.get(name.lower())
         if cls:
-            if cls._multiple:
-                argsgenerator = cls._parse(value)
-                headers = ([cls(name, **args) for args in argsgenerator])
-            else:
-                args = cls._parse(value)
-                headers = [cls(name, **args)]
+            try:
+                if cls._multiple:
+                    argsgenerator = cls._parse(value)
+                    headers = ([cls(name, **args) for args in argsgenerator])
+                else:
+                    args = cls._parse(value)
+                    headers = [cls(name, **args)]
+            except Exception as e:
+                log.warning("Parsing error on {!r}: {}".format(rawheader, e))
+                raise
         else:
             headers = [Header(name=name, value=value)]
+        log.debug("{!r} --> {}".format(rawheader, headers))
         return headers
         
     def __str__(self):

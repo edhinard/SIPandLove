@@ -42,11 +42,14 @@ class ParameterDict:
     against the lowercase keys, but all methods that expose
     keys to the user retrieve the original keys."""
     
-    def __init__(self, dict=None):
+    def __init__(self, dictorlist=None):
         """Create an empty dictionary, or update from 'dict'."""
         self._dict = collections.OrderedDict()
-        if dict:
-            self.update(dict)
+        if isinstance(dictorlist, dict):
+            self.update(dictorlist)
+        elif dictorlist is not None:
+            for k,v in dictorlist:
+                self[k] = v
 
     def __bool__(self):
         return bool(self._dict)
