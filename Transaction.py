@@ -61,6 +61,7 @@ class TransactionManager(threading.Thread):
 #            if addr is None:
 #                raise Exception("Missing addr for non in-Dialog request")
 #            request.dialog = Dialog.Dialog(request, addr)
+        request.enforceheaders()
         with self.lock:
             if isinstance(request, Message.INVITE):
                 transactionclass = INVITEclientTransaction

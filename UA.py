@@ -26,23 +26,19 @@ class Refusal(Exception):
         return "{} {}".format(self.code, self.reason)
 
 class SIPPhone(Transaction.TransactionManager):
-    def __init__(self, transport, proxy, uri, addressofrecord, credentials=None, T1=None, T2=None, T4=None):
+    def __init__(self, transport, proxy, domain, addressofrecord, credentials=None, T1=None, T2=None, T4=None):
         Transaction.TransactionManager.__init__(self, transport, T1, T2, T4)
 
         self.proxy = proxy
-        self.uri = uri
+        self.domain = domain
         self.addressofrecord = addressofrecord
         self.contacturi = SIPBNF.URI(self.addressofrecord)
         self.contacturi.host = self.transport.localip
         self.contacturi.port = self.transport.localport
         self.credentials = credentials
         self.media = None
-        self.reg = Message.REGISTER(
-            self.uri,
-            'From: {}'.format(self.addressofrecord),
-            'To: {}'.format(self.addressofrecord),
-            'Contact: {}'.format(self.contacturi)
-        )
+        self.regcallid = None
+        self.regseq = None
 
     def __str__(self):
         return str(self.contacturi)
@@ -69,8 +65,6 @@ class SIPPhone(Transaction.TransactionManager):
         return bye.response(200)
 
     def authenticate(self, message, addr):
-        message.newbranch()
-        message.getheader('CSeq').seq += 1
         transaction = self.newclienttransaction(message, addr)
         transaction.wait()
         if transaction.finalresponse and transaction.finalresponse.code in (401, 407) and self.credentials:
@@ -93,7 +87,7 @@ class SIPPhone(Transaction.TransactionManager):
     def options(self):
         log.info("%s querying for capabilities", self)
         options = Message.OPTIONS(
-            self.uri,
+            self.domain,
             'From: {}'.format(self.addressofrecord),
             'To: {}'.format(self.addressofrecord),
             'Content-Type: application/sdp'
@@ -110,9 +104,24 @@ class SIPPhone(Transaction.TransactionManager):
             log.info("%s registering for %ds", self, expires)
         else:
             log.info("%s unregistering", self)
-        self.reg.addheaders('Expires: {}'.format(expires), replace=True)
+
+        register = Message.REGISTER(
+            self.domain,
+            'From: {}'.format(self.addressofrecord),
+            'To: {}'.format(self.addressofrecord),
+            'Contact: {}'.format(self.contacturi),
+            'Expires: {}'.format(expires)
+        )
+        register.enforceheaders()
+        if self.regcallid:
+            register.callid = self.regcallid
+            self.regseq += 1
+            register.seq = self.regseq
+        else:
+            self.regcallid = register.callid
+            self.regseq = register.seq
         try:
-            finalresponse = self.authenticate(self.reg, self.proxy)
+            finalresponse = self.authenticate(register, self.proxy)
         except Exception as e:
             log.info("%s registering failed: %s", self, e)
             return False
@@ -131,6 +140,8 @@ class SIPPhone(Transaction.TransactionManager):
         return True
 
     def invite(self, touri, *headers):
+        if isinstance(touri, SIPPhone):
+            touri = touri.addressofrecord
         invite = Message.INVITE(touri, *headers)
         invite.addheaders(
             'From: {}'.format(self.addressofrecord),

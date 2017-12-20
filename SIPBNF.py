@@ -1,7 +1,5 @@
 #coding: utf-8
 
-import collections
-
 import pyparsing as pp
 
 from .Utils import quote,unquote,ParameterDict
@@ -332,15 +330,15 @@ class URI:
         params = res.get('params')
         if params:
             ks = params[0::2]; vs = params[1::2]
-            self.params = collections.OrderedDict(zip(ks,vs))
+            self.params = ParameterDict(zip(ks,vs))
         else:
-            self.params = collections.OrderedDict()
+            self.params = ParameterDict()
         headers = res.get('headers')
         if headers:
             ks = headers[0::2]; vs = headers[1::2]
-            self.headers = collections.OrderedDict(zip(ks,vs))
+            self.headers = ParameterDict(zip(ks,vs))
         else:
-            self.headers = collections.OrderedDict()
+            self.headers = ParameterDict()
         self.opaque = res.get('opaque')
     @property
     def userinfo(self):
@@ -623,20 +621,22 @@ def AuthorizationDisplay(authorization):
 #nextnonce            =  "nextnonce" EQUAL nonce-value
 #response-auth        =  "rspauth" EQUAL response-digest
 #response-digest      =  LDQUOT *LHEX RDQUOT
-nextnonce = pp.Literal('nextnonce') + pp.Suppress(EQUAL) + quoted_string
-message_qop = pp.Literal('qop') + pp.Suppress(EQUAL) + token
-response_auth = pp.Literal('rspauth') + pp.Suppress(EQUAL) + pp.Suppress(LDQUOT) + pp.Optional(pp.Word(LHEX),'') + pp.Suppress(RDQUOT)
-cnonce = pp.Literal('cnonce') + pp.Suppress(EQUAL) + quoted_string
-nonce_count = pp.Literal('nc') + pp.Suppress(EQUAL) + pp.Word(LHEX, exact=8)
+nextnonce = pp.CaselessLiteral('nextnonce') + pp.Suppress(EQUAL) + quoted_string
+message_qop = pp.CaselessLiteral('qop') + pp.Suppress(EQUAL) + token
+response_auth = pp.CaselessLiteral('rspauth') + pp.Suppress(EQUAL) + pp.Suppress(LDQUOT) + pp.Optional(pp.Word(LHEX),'') + pp.Suppress(RDQUOT)
+cnonce = pp.CaselessLiteral('cnonce') + pp.Suppress(EQUAL) + quoted_string
+nonce_count = pp.CaselessLiteral('nc') + pp.Suppress(EQUAL) + pp.Word(LHEX, exact=8)
 ainfo = pp.Group(nextnonce ^ message_qop ^ response_auth ^ cnonce ^ nonce_count)
 Authentication_Info = Parser('Authentication-Info header', ainfo + pp.ZeroOrMore(pp.Suppress(COMMA) + ainfo))
-Authentication_InfoArgs = ('params',)
+Authentication_InfoArgs = ('key','value')
 def Authentication_InfoParse(headervalue):
     for k,v in Authentication_Info.parse(headervalue):
-        yield dict(params={k:v})
+        yield dict(key=k, value=unquote(v))
 def Authentication_InfoDisplay(auth):
-    print(auth.params)
-    return ",".join(("{}={}".format(k,v) for k,v in auth.params.items()))
+    value = auth.value
+    if auth.key.lower in('nextnonce', 'rspauth', 'cnonce'):
+        value = quote(auth.value, forcequote=True)
+    return "{}={}".format(auth.key, value)
 Authentication_InfoMultiple = True
 
 #Call-ID  =  ( "Call-ID" / "i" ) HCOLON callid
@@ -691,16 +691,16 @@ def processaddrparsing(res):
     params = res.get('hparams')
     if params:
         ks = params[0::2]; vs = params[1::2]
-        params = collections.OrderedDict(zip(ks,vs))
+        params = ParameterDict(zip(ks,vs))
     else:
-        params = collections.OrderedDict()
+        params = ParameterDict()
     if not res.get('aquot'):
         params.update(address.params)
-        address.params = collections.OrderedDict()
+        address.params = ParameterDict()
     return dict(display=display, address=address, params=params)
 def ContactParse(headervalue):
     if headervalue.strip() == '*':
-        return dict(display=None, address='*', params=collections.OrderedDict())
+        return dict(display=None, address='*', params=ParameterDict())
     for res in Contact.parse(headervalue):
         yield processaddrparsing(res)
 ContactMultiple = True
@@ -773,7 +773,7 @@ def Content_TypeParse(headervalue):
     res = Content_Type.parse(headervalue)
     type = res.pop(0)
     subtype = res.pop(0)
-    params = {}
+    params = ParameterDict()
     while res:
         k = res.pop(0)
         v = unquote(res.pop(0))
@@ -915,7 +915,7 @@ def Proxy_AuthenticateParse(headervalue):
 def Proxy_AuthenticateDisplay(authenticate):
     if authenticate.scheme.lower() == 'digest':
         params = []
-        for k,v in authorization.params.items():
+        for k,v in authenticate.params.items():
             if v is None: continue
             if k.lower() in Proxy_AuthenticateQuotedparams:
                 v = quote(str(v), True)
@@ -969,9 +969,9 @@ def RouteParse(headervalue):
         params = res.get('hparams')
         if params:
             ks = params[0::2]; vs = params[1::2]
-            params = collections.OrderedDict(zip(ks,vs))
+            params = ParameterDict(zip(ks,vs))
         else:
-            params = collections.OrderedDict()
+            params = ParameterDict()
         yield dict(display=display, address=address, params=params)
 RouteMultiple = True
 RouteDisplay = ContactDisplay
@@ -1026,11 +1026,11 @@ ToDisplay = FromDisplay
 #sent-by           =  host [ COLON port ]
 #ttl               =  1*3DIGIT ; 0 to 255
 via_extension = generic_param
-via_branch = pp.CaselessLiteral('branch') + EQUAL + token
-via_received = pp.CaselessLiteral('received') + EQUAL + (IPv4address ^ IPv6address)
-via_maddr = pp.CaselessLiteral('maddr') + EQUAL + host
+via_branch = pp.CaselessLiteral('branch') + pp.Suppress(EQUAL) + token
+via_received = pp.CaselessLiteral('received') + pp.Suppress(EQUAL) + (IPv4address ^ IPv6address)
+via_maddr = pp.CaselessLiteral('maddr') + pp.Suppress(EQUAL) + host
 ttl = pp.Word(pp.nums, max=3)
-via_ttl = pp.CaselessLiteral('ttl') + EQUAL + ttl
+via_ttl = pp.CaselessLiteral('ttl') + pp.Suppress(EQUAL) + ttl
 via_params = via_ttl ^ via_maddr ^ via_received ^ via_branch ^ via_extension
 sent_by = host + pp.Optional(pp.Suppress(COLON) + pp.Word(pp.nums), None)
 transport = pp.CaselessLiteral('UDP') ^ pp.CaselessLiteral('TCP') ^ pp.CaselessLiteral('TLS') ^ pp.CaselessLiteral('SCTP') ^ other_transport
@@ -1051,14 +1051,11 @@ def ViaParse(headervalue):
         port = res.pop(0)
         if port is not None:
             port = int(port)
-        params = {}
+        params = ParameterDict()
         while res:
             k = res.pop(0)
-            if res and res[0] == '=':
-                res.pop(0)
-                params[k] = res.pop(0)
-            else:
-                params[k] = None
+            v = res.pop(0)
+            params[k] = v
         yield dict(protocol=protocol, host=host, port=port, params=params)
 ViaMultiple = True
 def ViaDisplay(via):

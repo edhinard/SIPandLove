@@ -116,7 +116,7 @@ class Transport(multiprocessing.Process):
         if (protocol == 'TCP' or len(message.body)) and not message.getheader('l'):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
-        log.info("--> %s/%s:%d\n%s-", protocol, ip, port, message)
+        log.info("--> %s/%s:%d\n%s", protocol, ip, port, message)
         self.pipe.send((protocol, (ip, port), message.tobytes()))
 
     def recv(self, timeout=None):
@@ -132,7 +132,7 @@ class Transport(multiprocessing.Process):
                         if 'rport' in via.params:
                             via.params['received'] = ip
                             via.params['rport'] = port
-                log.info("<-- %s/%s:%d\n%s-", protocol, ip, port, message)
+                log.info("<-- %s/%s:%d\n%s", protocol, ip, port, message)
                 return message
         return None
                 
@@ -335,7 +335,7 @@ class ErrorListener(threading.Thread):
                 dstport, = struct.unpack_from('!H', packet, 20+8+20+2)
                 message = Message.SIPMessage.frombytes(message)
                 if message:
-                    log.info("<-- ERR/%s:%d %s\n%s-", dstip, dstport, err, message)
+                    log.info("<-- ERR/%s:%d %s\n%s", dstip, dstport, err, message)
                     if errorcb:
                         with ErrorListener.lock:
                             errorcb(err, (dstip,dstport), message)
@@ -345,7 +345,7 @@ class ErrorListener(threading.Thread):
                 err,addr,message = self.pipeout.recv()
                 message = Message.SIPMessage.frombytes(message)
                 if message:
-                    log.info("<-- ERR/%s:%d %s\n%s-", *addr, err, message)
+                    log.info("<-- ERR/%s:%d %s\n%s", *addr, err, message)
                     if errorcb:
                         with ErrorListener.lock:
                             errorcb(err, addr, message)

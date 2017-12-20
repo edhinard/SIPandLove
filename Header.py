@@ -15,18 +15,15 @@ class Headers:
     
     def __init__(self, *headers, strictparsing=True):
         self._headers = []
-        self.errors = []
         self.add(*headers, strictparsing=strictparsing)
         
     def add(self, *headers, strictparsing=True):
-        headers,errors = Headers.parse(*headers, strictparsing=strictparsing)
-        self.errors.extend(errors)
+        headers = Headers.parse(*headers, strictparsing=strictparsing)
         self._headers.extend(headers)
         return headers
 
     def addifmissing(self, *headers, strictparsing=True):
-        headers,errors = Headers.parse(*headers, strictparsing=strictparsing)
-        self.errors.extend(errors)
+        headers = Headers.parse(*headers, strictparsing=strictparsing)
         for header in headers:
             name = header._indexname
             try:
@@ -36,9 +33,7 @@ class Headers:
         return headers
 
     def replaceoradd(self, *headers, strictparsing=True):
-        headers,errors = Headers.parse(*headers, strictparsing=strictparsing)
-        self.errors.extend(errors)
-
+        headers = Headers.parse(*headers, strictparsing=strictparsing)
         replaced = {}
         for header in headers:
             name = header._indexname
@@ -61,7 +56,6 @@ class Headers:
     @staticmethod
     def parse(*headers, strictparsing):
         newheaders = []
-        errors = []
         for header in headers:
             #
             # Already formed Headers are copied and added to the list
@@ -96,8 +90,8 @@ class Headers:
                     if strictparsing:
                         raise
                     else:
-                        errors.append(error)
-        return newheaders, errors
+                        log.warning(error)
+        return newheaders
 
     def getlist(self, *names):
         for index in self.indices(*names):
@@ -238,6 +232,7 @@ class Header(metaclass=HeaderMeta):
         else:
             self._args = kwargs.keys()
         self.__dict__.update(kwargs)
+        log.debug("New header {}".format(self))
 
     HEADER_RE = re.compile('^([a-zA-Z-.!%*_+`\'~]+)[ \t]*:(.*)$', flags=re.DOTALL)
     UNFOLDING_RE = re.compile('[ \t]*\r\n[ \t]+')

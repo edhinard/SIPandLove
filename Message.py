@@ -221,6 +221,17 @@ class SIPMessage(object):
         t.params['tag'] = tag
     totag = property(_gettotag, _settotag)
 
+    def _getcallid(self):
+        c = self.getheader('Call-Id')
+        if c:
+            return c.callid
+    def _setcallid(self, cid):
+        c = self.getheader('Call-Id')
+        if not c:
+            raise Exception("missing Call-Id header")
+        c.callid = cid
+    callid = property(_getcallid, _setcallid)
+
     def _getseq(self):
         c = self.getheader('CSeq')
         if c:
@@ -261,13 +272,11 @@ class SIPMessage(object):
 class SIPResponse(SIPMessage):
     defaultreasons = {100:'Trying', 180:'Ringing', 181:'Call is Being Forwarded', 182:'Queued', 183:'Session in Progress', 199:'Early Dialog Terminated', 200:'OK', 202:'Accepted', 204:'No Notification', 300:'Multiple Choices', 301:'Moved Permanently', 302:'Moved Temporarily', 305:'Use Proxy', 380:'Alternative Service', 400:'Bad Request', 401:'Unauthorized', 402:'Payment Required', 403:'Forbidden', 404:'Not Found', 405:'Method Not Allowed', 406:'Not Acceptable', 407:'Proxy Authentication Required', 408:'Request Timeout', 409:'Conflict', 410:'Gone', 411:'Length Required', 412:'Conditional Request Failed', 413:'Request Entity Too Large', 414:'Request-URI Too Long', 415:'Unsupported Media Type', 416:'Unsupported URI Scheme', 417:'Unknown Resource-Priority', 420:'Bad Extension', 421:'Extension Required', 422:'Session Interval Too Small', 423:'Interval Too Brief', 424:'Bad Location Information', 428:'Use Identity Header', 429:'Provide Referrer Identity', 430:'Flow Failed', 433:'Anonymity Disallowed', 436:'Bad Identity-Info', 437:'Unsupported Certificate', 438:'Invalid Identity Header', 439:'First Hop Lacks Outbound Support', 470:'Consent Needed', 480:'Temporarily Unavailable', 481:'Call/Transaction Does Not Exist', 482:'Loop Detected.', 483:'Too Many Hops', 484:'Address Incomplete', 485:'Ambiguous', 486:'Busy Here', 487:'Request Terminated', 488:'Not Acceptable Here', 489:'Bad Event', 491:'Request Pending', 493:'Undecipherable', 494:'Security Agreement Required', 500:'Server Internal Error', 501:'Not Implemented', 502:'Bad Gateway', 503:'Service Unavailable', 504:'Server Time-out', 505:'Version Not Supported', 513:'Message Too Large', 580:'Precondition Failure', 600:'Busy Everywhere', 603:'Decline', 604:'Does Not Exist Anywhere', 606:'Not Acceptable'}
     def __init__(self, code, *headers, body=None, reason=None, **kw):
-        SIPMessage.__init__(self, *headers, body=body)
         self.code = code
         self.familycode = code // 100
         self.reason = reason if reason is not None else self.defaultreasons.get(code, '')
-        if log.isEnabledFor(logging.INFO):
-            headers = '\n   '.join(str(h) for h in self._headers)
-            log.info("Response:\n   code={} reason={}\n   {}".format(self.code, self.reason, headers))
+        log.debug("New response: code={} reason={}".format(self.code, self.reason))
+        SIPMessage.__init__(self, *headers, body=body)
 
     def startline(self):
         return 'SIP/2.0 {} {}'.format(self.code, self.reason).encode('utf-8')
@@ -286,12 +295,14 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
     tagprefix = 'SIPandLove'
     tagsuffix = ''
     def __init__(self, uri, *headers, body=None, method=None, **kw):
+        log.debug("New request: method={} uri={}".format(method, uri))
         SIPMessage.__init__(self, *headers, body=body)
         self.uri = SIPBNF.URI(uri)
         if method is not None:
             self.method = method
             self.METHOD = method.upper()
 
+    def enforceheaders(self):
         self.addheaders(
             Header.Via(
                 protocol='???',
@@ -299,29 +310,19 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                 port=None,
                 params={}
             ),
-            ifmissing=True
-        )
-
-        if self.METHOD != 'REGISTER':
-            self.addheaders(
-                'To: {}'.format(uri),
-                ifmissing=True
-            )
-
-        if self.branch is None:
-            self.newbranch()
-        if self.getheader('f') and self.fromtag is None:
-            self.fromtag = self.randomstr()
-        self.responsetotag = self.randomstr()
-        self.addheaders(
+            Header.From(display=None, address=self.uri, params={}),
+            Header.To(display=None, address=self.uri, params={}),
             Header.Max_Forwards(max=70),
             Header.Call_ID(callid=self.randomstr(20)),
             Header.CSeq(seq=random.randint(0,0x7fff), method=self.METHOD),
             ifmissing=True
         )
-        if log.isEnabledFor(logging.INFO):
-            headers = '\n   '.join(str(h) for h in self._headers)
-            log.info("Request:\n   method={} uri={}\n   {}".format(self.method, self.uri, headers))
+
+        if self.branch is None:
+            self.newbranch()
+        if self.fromtag is None:
+            self.fromtag = self.randomstr()
+        self.responsetotag = self.randomstr()
 
     @staticmethod
     def settagprefix(tag):
@@ -489,33 +490,8 @@ class BYE(SIPRequest):
     pass
 
 if __name__ == '__main__':
-    import logging.config
-    LOGGING = {
-        'version': 1,
-        'formatters': {
-            'simple': {
-                'format': "%(asctime)s %(levelname)s %(name)s %(message)s"
-            }
-        },
-        'handlers': {
-            'console': {
-                'class': 'logging.StreamHandler',
-                'formatter': 'simple',
-            }
-        },
-        'loggers': {
-            'Header': {
-                'level': 'INFO'
-            },
-            'Message': {
-                'level': 'DEBUG'
-            }
-        },
-        'root': {
-            'handlers': ['console']
-        }
-    }
-    logging.config.dictConfig(LOGGING)
+    import snl
+    snl.loggers['Message'].setLevel('INFO')
 
 # ----------------------------------
     register = REGISTER('sip:osk.nokims.eu')
@@ -527,19 +503,23 @@ if __name__ == '__main__':
                            nc=1,
                            username='+33900821221@osk.nokims.eu',
                            password='nsnims2008')
+    log.info(params)
     assert params['response'] == 'afc145874b3545922d46de9ecf55ed8e'
-    print("Digest authentication test passed")
+    log.warning("Digest authentication test passed\n")
 
 # ----------------------------------
     nonce=base64.b64encode(binascii.unhexlify('a5ac4954f5b6c81ac25d2d8fbf8da281272fc04023e60000517530451bd73895'))
     K=b'alice\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
     
     password,ik,ck = SIPRequest.AKA(nonce, K)
+    log.info("password=%s", password)
+    log.info("ik=%s", ik)
+    log.info("ck=%s", ck)
 
     assert password == binascii.unhexlify('bd5c708ee326b965')
     assert ik == binascii.unhexlify('b87a8e0392ab4cb8aeb29669d87d0518')
     assert ck == binascii.unhexlify('b4eb9c3b6b10ce98f6dfe36ca8ccdcb6')
-    print("AKA test passed")
+    log.warning("AKA test passed\n")
 
 # ----------------------------------
     register = SIPMessage.frombytes(b'''REGISTER sip:ims.mnc001.mcc208.3gppnetwork.org SIP/2.0\r
@@ -590,4 +570,4 @@ Security-Server: ipsec-3gpp; ealg=null; alg=hmac-md5-96; spi-c=5008; spi-s=5009;
         ref = str(refparams[k])
         test = str(testparams[k])
         assert ref==test
-    print("Message parsing + Digest AKA authentication test passed")
+    log.warning("Message parsing + Digest AKA authentication test passed\n")
