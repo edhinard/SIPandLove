@@ -301,6 +301,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
         if method is not None:
             self.method = method
             self.METHOD = method.upper()
+        self.responsetotag = None
 
     def enforceheaders(self):
         self.addheaders(
@@ -322,7 +323,6 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             self.newbranch()
         if self.fromtag is None:
             self.fromtag = self.randomstr()
-        self.responsetotag = self.randomstr()
 
     @staticmethod
     def settagprefix(tag):
