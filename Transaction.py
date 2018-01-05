@@ -10,17 +10,16 @@ from . import Message
 from . import Timer
 from . import Transport
 from . import Dialog
-import snl
 
 class TransactionManager(threading.Thread):
     def __init__(self, transport, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
         Transport.errorcb = self.transporterror
 
-        if isinstance(transport, snl.Transport):
+        if isinstance(transport, Transport.Transport):
             self.transport = transport
         else:
-            self.transport = snl.Transport(transport)
+            self.transport = Transport.Transport(transport)
         self.T1 = T1 or .5
         self.T2 = T2 or 4.
         self.T4 = T4 or 5.
@@ -703,7 +702,7 @@ if __name__ == '__main__':
     import snl
     snl.loggers['Transaction'].setLevel('INFO')
 
-    tm = TransactionManager(snl.Transport('eno1', localport=5061))
+    tm = TransactionManager('eno1', localport=5061)
     req1 = snl.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu')

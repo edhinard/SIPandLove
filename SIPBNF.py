@@ -812,10 +812,10 @@ def CSeqDisplay(cseq):
 #error-uri   =  LAQUOT absoluteURI RAQUOT *( SEMI generic-param )
 #
 #Expires     =  "Expires" HCOLON delta-seconds
-Expires = Parser('Expires header', delta_seconds)
+Expires = Parser('(Min-)Expires header', delta_seconds)
 ExpiresArgs = ('delta',)
 def ExpiresParse(headervalue):
-    return dict(delta=int(Expires.parse(headervalue)[0]))
+    return dict(delta=Expires.parse(headervalue)[0])
 def ExpiresDisplay(e):
     return str(e.delta)
 
@@ -850,6 +850,9 @@ def Max_ForwardsDisplay(mf):
 
 
 #Min-Expires  =  "Min-Expires" HCOLON delta-seconds
+Min_ExpiresArgs = ExpiresArgs
+Min_ExpiresParse = ExpiresParse
+Min_ExpiresDisplay = ExpiresDisplay
 
 
 #Organization  =  "Organization" HCOLON [TEXT-UTF8-TRIM]

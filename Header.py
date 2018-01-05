@@ -375,8 +375,8 @@ class Max_Forwards(Header):
 #class MIME_Version(Header):
 #    pass
 
-#class Min_Expires(Header):
-#    pass
+class Min_Expires(Header):
+    pass
 
 #class Organization(Header):
 #    pass

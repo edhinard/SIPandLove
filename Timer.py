@@ -4,9 +4,15 @@
 import multiprocessing
 import threading
 import time
+import logging
+log = logging.getLogger('Timer')
+
 
 def arm(duration, cb, *args, **kwargs):
-    MANAGER.arm(duration, cb, *args, **kwargs)
+    return MANAGER.arm(duration, cb, *args, **kwargs)
+
+def unarm(timer):
+    MANAGER.unarm(timer)
     
 class TimerManager(threading.Thread):
     def __init__(self):
@@ -24,14 +30,25 @@ class TimerManager(threading.Thread):
         with self.lock:
             self.timers[idt] = timer
         self.pipe.send((duration, idt))
+        return idt
+
+    def unarm(self, timer):
+        with self.lock:
+            self.timers.pop(timer, None)
 
     # Thread loop
     def run(self):
+        log.debug("Starting timer thread")
         while True:
             idt = self.pipe.recv()
             with self.lock:
-                cb,args,kwargs = self.timers.pop(idt)
-            cb(*args, **kwargs)
+                cb,args,kwargs = self.timers.pop(idt, (None, None, None))
+            if cb:
+                try:
+                    log.info("calling %s(*%s, **%s)", cb, args, kwargs)
+                    cb(*args, **kwargs)
+                except Exception as e:
+                    log.warning(e)
 
     # Process loop
     @staticmethod

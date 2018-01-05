@@ -4,30 +4,19 @@
 import random
 import logging
 import time
+import threading
 log = logging.getLogger('UA')
 
 from . import SIPBNF
 from . import Message
 from . import Transaction
 from . import Media
-import snl
+from . import Timer
+from . import Dialog
 
-class AuthenticationError(Exception):
-    def __init__(self, message):
-        self.message = message
-    def __str__(self):
-        return self.message
-
-class Refusal(Exception):
-    def __init__(self, response):
-        self.code = response.code
-        self.reason = response.reason
-    def __str__(self):
-        return "{} {}".format(self.code, self.reason)
-
-class SIPPhone(Transaction.TransactionManager):
-    def __init__(self, transport, proxy, domain, addressofrecord, credentials=None, T1=None, T2=None, T4=None):
-        Transaction.TransactionManager.__init__(self, transport, T1, T2, T4)
+class UAbase(Transaction.TransactionManager):
+    def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None, **kwargs):
+        super().__init__(transport, T1, T2, T4)
 
         self.proxy = proxy
         self.domain = domain
@@ -35,53 +24,24 @@ class SIPPhone(Transaction.TransactionManager):
         self.contacturi = SIPBNF.URI(self.addressofrecord)
         self.contacturi.host = self.transport.localip
         self.contacturi.port = self.transport.localport
-        self.credentials = credentials
-        self.media = None
-        self.regcallid = None
-        self.regseq = None
+
+        # call init function of mixins, in reverse MRO and only once
+        called = set()
+        for klass in reversed(self.__class__.mro()):
+            if hasattr(klass, 'mixininit') and not klass.mixininit in called:
+                kwargs = klass.mixininit(self, **kwargs)
+                called.add(klass.mixininit)
+        if kwargs:
+            log.warning("got unexpected keyword argument {!r}".format(tuple(kwargs.keys())))
 
     def __str__(self):
         return str(self.contacturi)
 
-    def INVITE_handler(self, invite):
-        log.info("%s invited by %s", self, invite.getheader('f').address)
-        if self.media is None:
-            log.info("%s decline invitation", self)
-            return invite.response(603)
-        self.media.setparticipantoffer(invite.body)
-        self.media.transmit()
-        log.info("%s accept invitation", self)
-        return invite.response(
-            200,
-            'Contact: {}'.format(self.contacturi),
-            'c:application/sdp',
-            body=self.media.localoffer
-        )
-
-    def BYE_handler(self, bye):
-        log.info("%s byed by %s", self, bye.getheader('f').address)
-        if self.media:
-            self.media.stop()
-        return bye.response(200)
-
-    def authenticate(self, message, addr):
-        transaction = self.newclienttransaction(message, addr)
+    def sendmessageandwaitforresponse(self, message):
+        transaction = self.newclienttransaction(message, self.proxy)
         transaction.wait()
-        if transaction.finalresponse and transaction.finalresponse.code in (401, 407) and self.credentials:
-            log.info("%s %s needs authentication", self, message.METHOD)
-            auth = message.authenticationheader(transaction.finalresponse, **self.credentials)
-            if auth.header is None:
-                raise AuthenticationError(auth.error)
-            message.addheaders(auth.header, replace=True)
-            message.newbranch()
-            transaction = self.newclienttransaction(message, addr)
-            transaction.wait()
         if not transaction.finalresponse:
             raise transaction.lastevent
-        if transaction.finalresponse.code in (401, 407):
-            raise AuthenticationError("{} {}".format(transaction.finalresponse.code, transaction.finalresponse.reason))
-        if transaction.finalresponse.familycode != 2:
-            raise Refusal(transaction.finalresponse)
         return transaction.finalresponse
     
     def options(self):
@@ -93,15 +53,62 @@ class SIPPhone(Transaction.TransactionManager):
             'Content-Type: application/sdp'
         )
         try:
-            finalresponse = self.authenticate(options, self.proxy)
+            finalresponse = self.sendmessageandwaitforresponse(options)
         except Exception as e:
             log.info("%s querying failed: %s", self, e)
             return
+        if finalresponse.familycode != 2:
+            log.info("%s querying failed: %d %s", self, finalresponse.code, finalresponse.reason)
+            return
         log.info("%s query ok", self)
 
-    def register(self, expires=3600):
+
+class AuthenticationError(Exception):
+    pass
+class AuthenticationMixin:
+    def mixininit(self, credentials=None, **kwargs):
+        self.credentials = credentials
+        return kwargs
+    def sendmessageandwaitforresponse(self, message):
+        transaction = self.newclienttransaction(message, self.proxy)
+        transaction.wait()
+        if transaction.finalresponse and transaction.finalresponse.code in (401, 407):
+            if self.credentials is None:
+                log.warning("no credential provided at initialization")
+            else:
+                log.info("%s %d retrying %s with authentication", self, transaction.finalresponse.code, message.METHOD)
+                auth = message.authenticationheader(transaction.finalresponse, **self.credentials)
+                if auth.header is None:
+                    raise AuthenticationError(auth.error)
+                message.addheaders(auth.header, replace=True)
+                message.newbranch()
+                transaction = self.newclienttransaction(message, self.proxy)
+                transaction.wait()
+        if not transaction.finalresponse:
+            raise transaction.lastevent
+        if transaction.finalresponse.code in (401, 407):
+            raise AuthenticationError("{} {}".format(transaction.finalresponse.code, transaction.finalresponse.reason))
+        return transaction.finalresponse
+
+
+class RegistrationMixin:
+    def mixininit(self, **kwargs):
+        self.registered = False
+        self.regtimer = None
+        self.regcallid = None
+        self.regseq = None
+        return kwargs
+
+    def register(self, expires=3600, async=False):
+        if not async:
+            return self._register(expires)
+        threading.Thread(target=self._register, args=(expires,), daemon=True).start()
+
+    def _register(self, expires=3600):
+        Timer.unarm(self.regtimer)
+
         if expires > 0:
-            log.info("%s registering for %ds", self, expires)
+            log.info("%s %s for %ds", self, 're-registering' if self.registered else 'registering', expires)
         else:
             log.info("%s unregistering", self)
 
@@ -121,25 +128,51 @@ class SIPPhone(Transaction.TransactionManager):
             self.regcallid = register.callid
             self.regseq = register.seq
         try:
-            finalresponse = self.authenticate(register, self.proxy)
+            finalresponse = self.sendmessageandwaitforresponse(register)
         except Exception as e:
             log.info("%s registering failed: %s", self, e)
-            return False
+            self.registered = False
+            return self.registered
+        if finalresponse.code == 423:
+            minexpires = finalresponse.getheader('Min-Expires')
+            log.info("%s registering failed: %s %s, %r", self, finalresponse.code, finalresponse.reason, minexpires)
+            if minexpires:
+                return self._register(minexpires.delta)
+            else:
+                return
+        if finalresponse.familycode != 2:
+            log.info("%s registering failed: %s %s", self, finalresponse.code, finalresponse.reason)
+            return
 
         expiresheader = finalresponse.getheader('Expires')
         if expiresheader:
-            expires = expiresheader.delta
+            gotexpires = expiresheader.delta
         contactheader = finalresponse.getheader('Contact')
         if contactheader:
-            expires = contactheader.params.get('expires')
-        if expires > 0:
-            log.info("%s registered for %ds", self, expires)
+            gotexpires = contactheader.params.get('expires')
+        if gotexpires > 0:
+            self.registered = True
+            log.info("%s registered for %ds", self, gotexpires)
+            Timer.arm(duration=gotexpires//2, cb=self.register, expires=expires, async=True)
         else:
+            self.registered = False
             log.info("%s unregistered", self)
-        #self.registration ...
-        return True
+        return self.registered
+
+
+class SessionMixin:
+    def mixininit(self, mediaip=None, mediaport=None, pcapfilename=None, pcapfilter=None, **kwargs):
+        self.session = None
+        self.mediaip = mediaip or self.transport.localip
+        self.mediaport = mediaport
+        self.pcapfilename = pcapfilename
+        self.pcapfilter = pcapfilter
+        return kwargs
 
     def invite(self, touri, *headers):
+        if self.session:
+            raise Exception("session in progress")
+
         if isinstance(touri, SIPPhone):
             touri = touri.addressofrecord
         invite = Message.INVITE(touri, *headers)
@@ -148,90 +181,75 @@ class SIPPhone(Transaction.TransactionManager):
             'Contact: {}'.format(self.contacturi),
             ifmissing=True
         )
-        if self.media:
-            invite.setbody(self.media.localoffer, 'application/sdp')
-            log.info("%s inviting %s with SDP", self, touri)
-        else:
-            log.info("%s inviting %s without SDP", self, touri)
-
+        media = Media.Media(self.mediaip, self.mediaport, self.pcapfilename, self.pcapfilter)
+        invite.setbody(*media.getlocaloffer())
+        log.info("%s inviting %s with %s", self, touri, invite.getheader('Content-Type'))
         try:
-            finalresponse = self.authenticate(invite, self.proxy)
+            finalresponse = self.sendmessageandwaitforresponse(invite)
         except Exception as e:
             log.info("%s invitation failed: %s", self, e)
             return
-        log.info("%s invitation ok", self)
-        if self.media:
-            self.media.setparticipantoffer(finalresponse.body)
-            self.media.transmit()
-
-        dialog = Dialog(callid = invite.getheader('call-id').callid,
-                        localtag = invite.fromtag,
-                        remotetag = finalresponse.totag,
-                        localtarget = invite.getheader('contact').address,
-                        remotetarget = finalresponse.getheader('contact').address,
-                        localseq = invite.getheader('CSeq').seq,
-                        remoteseq = finalresponse.getheader('CSeq').seq
-                        )
-        return dialog
-
-    def bye(self, dialog):
-        log.info("%s bying %s", self, dialog)
-        dialog.localseq += 1
-        bye = Message.BYE(dialog.remotetarget,
-                         'to:{};tag={}'.format(dialog.remotetarget, dialog.remotetag),
-                         'from:{};tag={}'.format(dialog.localtarget, dialog.localtag),
-                         'call-id:{}'.format(dialog.callid),
-                         'cesq: {} BYE'.format(dialog.localseq))
-        try:
-            finalresponse = self.authenticate(bye, self.proxy)
-        except Exception as e:
-            log.info("%s bying failed: %s", self, e)
+        if finalresponse.familycode != 2:
+            log.info("%s invitation failed: %s %s", self, finalresponse.code, finalresponse.reason)
             return
-        self.media.stop()
-        log.info("%s bying ok", self)
+        log.info("%s invitation ok", self)
+        session = Dialog.Session(self, invite, finalresponse, media)
+        if not media.setremoteoffer(finalresponse.body):
+            log.info("%s incompatible codecs -> bying", self)
+            session.bye()
+            return
+        self.session = session
+        return self.session
 
-    def setmedia(self, rtpfile, mediaip=None, mediaport=None):
-        self.media = snl.Media(mediaip or self.transport.localip, mediaport, rtpfile, owner=self.transport.localip)
-        self.media.opensocket(mediaport)
-        return self.media
+    def INVITE_handler(self, invite):
+        ident = Dialog.UASid(invite)
+        if not ident:
+            # out of dialog invitation
+            log.info("%s invited by %s", self, invite.getheader('f').address)
+            if self.session:
+                log.info("%s busy -> rejecting", self)
+                return invite.response(481)
+            media = Media.Media(self.mediaip, self.mediaport, self.pcapfilename, self.pcapfilter)
+            if not media.setremoteoffer(invite.body):
+                log.info("%s incompatible codecs -> rejecting", self)
+                return invite.response(488)
+            log.info("%s accept invitation", self)
+            response = invite.response(200, 'Contact: {}'.format(self.contacturi))
+            response.setbody(*media.getlocaloffer())
+            self.session = Dialog.Session(self, response, invite, media)
+            return response
 
-class Dialog:
-    def __init__(self, callid, localtag, remotetag, localtarget, remotetarget,localseq, remoteseq):
-        self.callid = callid
-        self.localtag = localtag
-        self.remotetag = remotetag
-        self.localtarget = localtarget
-        self.remotetarget = remotetarget
-        self.localseq = localseq
-        self.remoteseq = remoteseq
+        if not self.session or ident != self.session.ident:
+            log.info("%s invalid invitation by %s", self, invite.getheader('f').address)
+            return invite.response(481)
 
+        return self.session.invitehandler(invite)
 
+    def BYE_handler(self, bye):
+        ident = Dialog.UASid(bye)
+        if not self.session or ident != self.session.ident:
+            return bye.response(481)
 
+        resp = self.session.byehandler(bye)
+        self.session = None
+        return resp
+
+class SIPPhone(SessionMixin, RegistrationMixin, AuthenticationMixin, UAbase):
+    pass
 
     
 if __name__ == '__main__':
     import snl
     snl.loggers['UA'].setLevel('INFO')
-    snl.loggers['Transaction'].setLevel('INFO')
-    snl.loggers['Transport'].setLevel('INFO')
 
-            
-    transport1 = snl.Transport('eno1', 5555)
-    phone1 = snl.SIPPhone(transport1, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821224@osk.nokims.eu', credentials=dict(username='+33900821224@osk.nokims.eu', password='nsnims2008'))
-#    phone1 = SIPPhone(transport1, '172.20.56.7', 'sip:sip.osk.com', 'sip:+33960700011@sip.osk.com', credentials=dict(username='+33960700011@sip.osk.com', password='huawei'))
-    phone1.register()
-    phone1.setmedia(Media.RTPRandomStream(PT=10, rtplen=40))
-
-    transport2 = snl.Transport('eno1', 6666)
-    phone2 = snl.SIPPhone(transport2, '194.2.137.40', 'sip:osk.nokims.eu', 'sip:+33900821221@osk.nokims.eu', credentials=dict(username='+33900821221@osk.nokims.eu', password='nsnims2008'))
-#    phone2 = SIPPhone(transport2, '172.20.56.7', 'sip:sip.osk.com', 'sip:+33960700012@sip.osk.com', credentials=dict(username='+33960700012@sip.osk.com', password='huawei'))
-    phone2.register()
-    with open('toto', 'w') as f:
-        f.write("PT=0\nseq=0x100\n<<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>><<<<0123>>>><<<<4567>>>>")
-    media = phone2.setmedia('toto')
-    
-    phone1.invite('sip:+33900821221@osk.nokims.eu')
-    media.wait()
-
-    ret = phone1.register(0)
-    ret = phone2.register(0)
+    idA = dict(
+        transport='eno1:5555',
+        proxy='194.2.137.40',
+        domain='sip:osk.nokims.eu',
+        addressofrecord='sip:+33900821220@osk.nokims.eu',
+        credentials=dict(username='+33900821220@osk.nokims.eu', password='nsnims2008'),
+        mediaport=3456,
+    )
+    phoneA = snl.SIPPhone(**idA)
+    phoneA.register(200)
+    phoneA.register(0)

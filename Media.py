@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import sys
+import threading
 import multiprocessing
 import multiprocessing.connection
 import random
@@ -13,81 +14,117 @@ import logging
 import errno
 log = logging.getLogger('Media')
 
-class Media(multiprocessing.Process):
-    def __init__(self, localip, localport, rtp, owner=None):
+import pcapng
+
+class Media(threading.Thread):
+    defaultcodecs = {
+        0 :('PCMU/8000',   None),
+        3 :('GSM/8000',    None),
+        4 :('G723/8000',   None),
+        5 :('DVI4/8000',   None),
+        6 :('DVI4/16000',  None),
+        7 :('LPC/8000',    None),
+        8 :('PCMA/8000',   None),
+        9 :('G722/8000',   None),
+        10:('L16/44100/2', None),
+        11:('L16/44100/1', None),
+        12:('QCELP/8000',  None),
+        13:('CN/8000',     None),
+        14:('MPA/90000',   None),
+        15:('G728/8000',   None),
+        16:('DVI4/11025',  None),
+        17:('DVI4/22050',  None),
+        18:('G729/8000',   None)}
+
+    def __init__(self, localip, localport, pcapfilename=None, pcapfilter=None):
         self.localip = localip
-        self.remoteip = None
-        self.remoteport = None
-        if rtp is None:
-            self.rtp = None
-            self.codecs = []
-            for payloadtype,(codecname, codecformat) in RTPStream.defaultcodecs.items():
-                self.codecs.append((payloadtype, codecname, codecformat))
-        else:
-            if isinstance(rtp, RTPStream):
-                self.rtp = rtp
-            else:
-                self.rtp = RTPFile(rtp)
-            self.codecs = [self.rtp.codec]
-        self.owner = owner or '0.0.0.0'
-        self.pipe,self.childpipe = multiprocessing.Pipe()
+        self.localport = None
+        self.wantedlocalport = localport or 0
+        self.pcapfilename = pcapfilename
+        self.pcapfilter = pcapfilter
+        self.codecs = [(payloadtype, codecname, codecformat) for payloadtype,(codecname, codecformat) in Media.defaultcodecs.items()]
 
-        multiprocessing.Process.__init__(self, daemon=True)
+        self.lock = multiprocessing.Lock()
+        self.lock.acquire()
+        self.pipe,childpipe = multiprocessing.Pipe()
+        self.process = MediaProcess(pipe=childpipe, lock=self.lock)
+        self.process.start()
+
+        super().__init__(daemon=True)
         self.start()
-        log.debug("%s starting process", self)
 
-    def __str__(self):
-        return "pid:{}".format(self.pid)
-
-    @property
-    def localoffer(self):
+    def getlocaloffer(self):
+        if self.localport is None:
+            self.opensocket(self.localip, self.wantedlocalport)
         sdplines = ['v=0',
-                    'o=- {0} {0} IN IP4 {1}'.format(random.randint(0,0xffffffff), self.owner),
+                    'o=- {0} {0} IN IP4 0.0.0.0'.format(random.randint(0,0xffffffff)),
                     's=-',
                     'c=IN IP4 {}'.format(self.localip),
                     't=0 0',
                     'm=audio {} RTP/AVP {}'.format(self.localport, ' '.join([str(t) for t,n,f in self.codecs])),
                     'a=sendrecv'
-]
+        ]
         sdplines.extend(['a=rtpmap:{} {}'.format(t, n) for t,n,f in self.codecs if n])
         sdplines.extend(['a=fmtp:{} {}'.format(t, f) for t,n,f in self.codecs if f])
         sdplines.append('')
-        return '\r\n'.join(sdplines)
+        return ('\r\n'.join(sdplines), 'application/sdp')
 
-    def opensocket(self, localport=0):
-        self.pipe.send(('nextsocket', localport))
+    def opensocket(self, localip, localport):
+        self.pipe.send(('opensocket', (localip, localport)))
         localportorexc = self.pipe.recv()
-        if not isinstance(localportorexc, int):
+        if isinstance(localportorexc, Exception):
             log.error(localportorexc)
             raise localportorexc
         self.localport = localportorexc
-        return self.localport
-    
-    def setparticipantoffer(self, sdp):
+
+    def setremoteoffer(self, sdp):
+        remoteip = None
+        remoteport = None
         for line in sdp.splitlines():
             if line.startswith(b'c='):
-                self.remoteip = line.split()[2]
+                remoteip = line.split()[2].decode('ascii')
             if line.startswith(b'm='):
-                self.remoteport = int(line.split()[1])
+                remoteport = int(line.split()[1])
+        if remoteip is not None and remoteport is not None and self.pcapfilename is not None:
+            if self.localport is None:
+                self.opensocket(self.localip, self.wantedlocalport)
+            self.starttransmit(remoteip, remoteport, self.pcapfilename, self.pcapfilter)
+        return True
 
-    def transmit(self):
-        if self.remoteip is not None and self.remoteport is not None:
-            self.pipe.send(('start',(self.remoteip, self.remoteport)))
-            self.pipe.recv()
-            log.info("%s start transmitting %s:%d", self, self.localip, self.localport)
-        else:
-            log.warning("missing participant offer")
+    def starttransmit(self, remoteip, remoteport, pcapfilename, pcapfilter):
+        self.pipe.send(('starttransmit',((remoteip, remoteport), (pcapfilename, pcapfilter))))
+        ackorexc = self.pipe.recv()
+        if isinstance(ackorexc, Exception):
+            log.error(ackorexc)
+            raise ackorexc
 
     def stop(self):
         self.pipe.send(('stop', None))
+#        self.pipe.recv()
 
 #    def wait(self):
 #        self.pipe.recv()
 
+    # Thread loop
     def run(self):
+        self.lock.acquire()
+
+class MediaProcess(multiprocessing.Process):
+    def __init__(self, pipe, lock):
+        super().__init__(daemon=True)
+        self.pipe = pipe
+        self.lock = lock
+
+    def __str__(self):
+        return "pid:{}".format(self.pid)
+
+    def run(self):
+        log.info("%s starting process", self)
+
         running = True
         transmitting = False
-        currentsock = nextsock = None
+        sock = None
+        rtpstream = None
 
         while running:
             # compute sleep time
@@ -106,82 +143,88 @@ class Media(multiprocessing.Process):
 
             # wait for incomming data or timeout
             obj = None
-            if currentsock:
-                objs = [currentsock, self.childpipe]
+            if sock:
+                objs = [sock, self.pipe]
             else:
-                objs = [self.childpipe]
+                objs = [self.pipe]
             for obj in multiprocessing.connection.wait(objs, sleep):
-                if obj == currentsock:
+                if obj == sock:
                     # incoming data from socket
-                    #  if not transmitting: discard data
-                    #  else ... discard data (and log)
-                    buf,addr = currentsock.recvfrom(65536)
-                    if transmitting:
-                        rtp = RTP.frombytes(buf)
-                        log.info("%s <-- %s", self, rtp)
+                    #  discard data (and log)
+                    buf,addr = sock.recvfrom(65536)
+                    rtp = RTP.frombytes(buf)
+                    log.info("%s %s:%-5d <--- %s:%-5d RTP(%s)", self, *sock.getsockname(), *addr, rtp)
                         
-                elif obj == self.childpipe:
+                elif obj == self.pipe:
                     # incomming data from pipe = command from main program. possible commands:
-                    #  -nextsocket + preferedport:
-                    #     create new socket, bind it and
+                    #  -opensocket + localaddr:
+                    #     create socket, bind it and
                     #     return its local port
-                    #  -start + remoteaddr:
-                    #     delete current socket if any
-                    #     next socket becomes current one
+                    #  -starttransmit + remoteaddr + pcap:
                     #     start transmitting
                     #     return ack
                     #  -stop:
                     #     stop transmitting and delete current socket if any
                     #     stop process
                     #     return ack
-                    command,param = self.childpipe.recv()
-                    if command == 'nextsocket':
-                        localport = param
-                        nextsock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                        nextsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    command,param = self.pipe.recv()
+                    if command == 'opensocket':
+                        localaddr = param
                         try:
-                            nextsock.bind((self.localip, localport))
-                            localport = nextsock.getsockname()[1]
-                        except OSError as err:
-                            exc = Exception("cannot bind UDP socket to {}. errno={}".format(self.localip, errno.errorcode[err.errno]))
-                            self.childpipe.send(exc)
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                         except Exception as exc:
-                            self.childpipe.send(exc)
+                            self.pipe.send(exc)
+                        try:
+                            sock.bind(localaddr)
+                            localport = sock.getsockname()[1]
+                        except OSError as err:
+                            exc = Exception("cannot bind UDP socket to {}. errno={}".format(localaddr, errno.errorcode[err.errno]))
+                            self.pipe.send(exc)
+                        except Exception as exc:
+                            self.pipe.send(exc)
                         else:
-                            self.childpipe.send(localport)
+                            self.pipe.send(localport)
+                        log.info("%s start listenning on %s:%d", self, *sock.getsockname())
 
-                    elif command == 'start':
-                        if nextsock is None:
-                            exc = Exception("no open socket, cannot start")
-                            self.childpipe.send(exc)
-                            continue
-                        if currentsock:
-                            currentsock.close()
-                        currentsock = nextsock
+                    elif command == 'starttransmit':
+                        remoteaddr,pcap = param
+                        try:
+                            rtpstream = RTPStream(*pcap)
+                        except Exception as exc:
+                            self.pipe(exc)
                         transmitting = True
-                        remoteaddr = param
+                        refrtptime = time.monotonic()
                         wakeuptime = time.monotonic()
-                        nextsock = None
-                        self.childpipe.send(localport)
-                        
+                        self.pipe.send('started')
+                        log.info("%s start transmitting to %s:%d", self, *remoteaddr)
+
                     elif command == 'stop':
-                        if currentsock:
-                            currentsock.close()
-                        if nextsock:
-                            nextsock.close()
+                        transmitting = False
                         running = False
-                        self.childpipe.send(True)
+
+                    else:
+                        self.pipe.send(Exception("Unknown command {}".format(command)))
 
             if obj is None:
-                # timeout
+                # multiprocessing.connection.wait timeout
                 # time to send next RTP packet if there is one
-                if transmitting and not self.rtp.eof:
-                    rtp,duration = self.rtp.nextpacket()
-                    currentsock.sendto(rtp.tobytes(), remoteaddr)
-                    log.info("%s --> %s", self, rtp)
-                    wakeuptime += duration
-                
-#        log.info("%s Stopping", self)
+                wakeuptime,rtp = rtpstream.nextpacket()
+                sock.sendto(rtp, remoteaddr)
+                log.info("%s %s:%-5d ---> %s:%-5d RTP(%s)", self, *sock.getsockname(), *remoteaddr, RTP.frombytes(rtp))
+                if wakeuptime < 0:
+                    transmitting = False
+                    running = False
+                else:
+                    wakeuptime += refrtptime
+        # end of while running
+
+        self.pipe.send('stopped')
+        log.info("%s stopping process", self)
+        self.lock.release()
+        if sock:
+            sock.close()
+
 
 class RTP:
     def __init__(self, payload, PT, seq, TS, SSRC, version=2, P=0, X=0, CC=0, M=0):
@@ -214,200 +257,59 @@ class RTP:
         hdr[1] = self.M<<7 | self.PT
         struct.pack_into('!HLL', hdr, 2, self.seq, self.TS, self.SSRC)
         return hdr + self.payload
-        
+
 
 class RTPStream:
-    defaultcodecs = {
-        0 :('PCMU/8000',   None),
-        3 :('GSM/8000',    None),
-        4 :('G723/8000',   None),
-        5 :('DVI4/8000',   None),
-        6 :('DVI4/16000',  None),
-        7 :('LPC/8000',    None),
-        8 :('PCMA/8000',   None),
-        9 :('G722/8000',   None),
-        10:('L16/44100/2', None),
-        11:('L16/44100/1', None),
-        12:('QCELP/8000',  None),
-        13:('CN/8000',     None),
-        14:('MPA/90000',   None),
-        15:('G728/8000',   None),
-        16:('DVI4/11025',  None),
-        17:('DVI4/22050',  None),
-        18:('G729/8000',   None)}
+    filtercriterions = ('srcport', 'dstport', 'PT', 'SSRC')
 
-    def __init__(self, PT, rtplen, **params):
-        self.PT = PT
-        self.rtplen = rtplen
-        if self.PT in RTPStream.defaultcodecs:
-            self.codec = [self.PT, *RTPStream.defaultcodecs[self.PT]]
-        else:
-            self.codec = [self.PT, None, None]
-        if 'codecname' in params:
-            self.codec[1] = params.pop('codecname')
-        if 'codecformat' in params:
-            self.codec[2] = params.pop('codecformat')
-        if self.codec[1] is None:
-            raise Exception("missing codecname")
-
-        self.seq = params.pop('seq', random.randint(0,0xffff))
-        self.period = params.pop('period', 0.020)
-        self.SSRC = params.pop('SSRC', random.randint(0,0xffffffff))
-        self.TS = params.pop('TS', random.randint(0,0xffffffff))
-        self.numsamples = params.pop('numsamples', None)
-        if self.numsamples is None:
-            try:
-                samplingrate = int(self.codec[1].split('/')[1])
-                self.numsamples = int(samplingrate * self.period)
-            except:
-                raise Exception("missing 'timestamp' or 'numsamples' or sampling rate in codec name")
-        self.eof = True
-
-    def __str__(self):
-        return "{}({})".format(self.__class__.__name__, self.name)
-
-    def nextparams(self):
-        self.TS = (self.TS + self.numsamples)  % 0xffffffff
-        self.seq = (self.seq + 1) % 0xffff
-
-    def nextpayload(self):
-        return b''
+    def __init__(self, pcapfilename, pcapfilter=None):
+        self.fp = open(pcapfilename, 'rb')
+        self.scanner = pcapng.FileScanner(self.fp)
+        self.pcapfilter = pcapfilter or {}
+        extracriterion = set(self.pcapfilter.keys()) - set(RTPStream.filtercriterions)
+        if extracriterion:
+            raise Exception("Unexpected filter criterion {!}".format(list(extracriterion)))
+        self.eof = False
+        self.generator = self._generator()
+        try:
+            dummy,self.nextrtp = next(self.generator)
+        except StopIteration:
+            self.eof = True
 
     def nextpacket(self):
-        rtp = RTP(self.nextpayload(), self.PT, self.seq, self.TS, self.SSRC)
+        rtp = self.nextrtp
+        try:
+            wakeuptime,self.nextrtp = next(self.generator)
+        except StopIteration:
+            self.eof = True
+            return -1,rtp
+        return wakeuptime,rtp
 
-        self.nextparams()
-        return rtp, self.period
-
-class RTPFile(RTPStream):
-    def __init__(self, rtpfile):
-        RTPStream.__init__(self)
-        self.eof = False
-        if isinstance(rtpfile, str):
-            self.f = open(rtpfile, 'rb')
-            self.name = rtpfile
-        else:
-            self.f = rtpfile
-            try:
-                self.name = f.name
-            except:
-                pass
-        self.nextparams()
-
-    def readupto(self, mark):
-        buf = bytearray()
-        while True:
-            b = self.f.read(1)
-            if not b:
-                self.eof = True
-                return b''
-            buf += b
-            if buf.endswith(mark):
-                break
-        return bytes(buf[:-len(mark)])
-
-    def nextpayload(self):
-        return self.readupto(b'>>>>')
-
-    def nextparams(self):
-        parambuf = self.readupto(b'<<<<')
-
-        # read parameters
-        params = {}
-        for line in parambuf.splitlines():
-            # discard comment lines
-            if line.strip().startswith(b'#'):
-                continue
-            # parameter line is <key> = <value>, ignore others
-            try:
-                k,v = line.split(b'=', 1)
-                params[k.strip().decode('utf-8')] = ast.literal_eval(v.strip().decode('utf-8'))
-            except Exception as e:
-                pass
-        if params:
-            log.debug("%s params=%s", self, params)
-
-        # update stored values
-        dseq = params.pop('dseq', 1)
-        if 'seq' in params:
-            self.seq = params.pop('seq')
-        else:
-            self.seq = (self.seq + dseq) % 0xffff
-
-        if 'PT' in params:
-            self.PT = params.pop('PT')
-            if self.PT in RTPStream.defaultcodecs:
-                self.codec = [self.PT, *RTPStream.defaultcodecs[self.PT]]
-            else:
-                self.codec = [self.PT, None, None]
-        if 'codecname' in params:
-            self.codec[1] = params.pop('codecname')
-        if 'codecformat' in params:
-            self.codec[2] = params.pop('codecformat')
-        if self.PT is None:
-            raise Exception("missing PT param in {}".format(self))
-        if self.codec[1] is None:
-            raise Exception("missing codecname for PT={} in {}".format(self.PT, self))
-
-        self.period = params.pop('period', self.period)
-        if 'timestamp' in params:
-            self.TS = params.pop('TS')
-        else:
-            if 'numsamples' in params:
-                self.numsamples = params.pop('numsamples')
-            if self.numsamples is None:
-                try:
-                    samplingrate = int(self.codec[1].split('/')[1])
-                    self.numsamples = int(samplingrate * self.period)
-                except:
-                    raise Exception("cannot compute TS. Missing 'timestamp' or 'numsamples' or sampling rate in codec name in {}".format(self))
-            self.TS = (self.TS + self.numsamples)  % 0xffffffff
-
-        self.__dict__.update(params)
-
-class RTPRandomStream(RTPStream):
-    def __init__(self, PT, rtplen, **params):
-        RTPStream.__init__(self, PT, rtplen, **params)
-        self.eof = False
-
-    def nextpayload(self):
-        return bytes((random.choice(range(256)) for _ in range(self.rtplen)))
-
-
-if __name__ == '__main__':
-    import tempfile
-    import os
-
-    import snl
-    snl.loggers['Media'].setLevel('DEBUG')
-
-    fd,name = tempfile.mkstemp()
-    f = open(fd, 'wb')
-    f.write(b"""
-PT=0
-seq=0x100
-<<<<0123>>>>
-<<<<4567>>>>
-
-#simulating packet lost
-dseq=2
-<<<<abc>>>>
-<<<<def>>>>
-""")
-    f.close()
-
-    media = Media('127.0.0.1', name)
-    media.setparticipantoffer(b'''v=0\r
-o=- 123 123 IN IP4 toto\r
-s=-
-m=audio 12345 RTP/AVP 116\r
-c=IN IP4 127.0.0.1\r
-a=rtpmap:116 AMR-WB/16000/1\r
-''')
-    media.transmit()
-    media.wait()
-    os.remove(name)
-
-    s = RTPRandomStream(PT=10, rtplen=40)
-    for _ in range(20):
-        s.nextpacket()
+    def _generator(self):
+        inittimestamp = None
+        for block in self.scanner:
+            if isinstance(block, pcapng.blocks.EnhancedPacket):
+                if block.interface.link_type == 1 and block.captured_len == block.packet_len:
+                    ethertype, = struct.unpack_from('!h', block.packet_data, 12)
+                    if ethertype == 0x800:
+                        offsetdata = 4 * (block.packet_data[14] & 0x0f)
+                        protocol = block.packet_data[23]
+                        if protocol == 17:
+                            srcport,dstport = struct.unpack_from('!2H', block.packet_data, 14 + offsetdata)
+                            rtp = block.packet_data[14 + offsetdata + 8:]
+                            PT,SSRC = struct.unpack_from('!xB6xI', rtp);PT&=0x7f
+                            loc = locals()
+                            params = {k:loc[k] for k in RTPStream.filtercriterions}
+                            for k,v in self.pcapfilter.items():
+                                if params[k] != v:
+                                    break
+                            else:
+                                if inittimestamp is None:
+                                    inittimestamp = block.timestamp
+                                    timestamp = 0
+                                if block.timestamp - inittimestamp < timestamp or block.timestamp - inittimestamp > timestamp + 5:
+                                    inittimestamp = block.timestamp - timestamp - 0.2
+                                timestamp = block.timestamp - inittimestamp
+                                yield timestamp,rtp
+        self.fp.close()
+        self.eof=True
