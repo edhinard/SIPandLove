@@ -9,7 +9,6 @@ log = logging.getLogger('Transaction')
 from . import Message
 from . import Timer
 from . import Transport
-from . import Dialog
 
 class TransactionManager(threading.Thread):
     def __init__(self, transport, T1=None, T2=None, T4=None):
@@ -47,19 +46,11 @@ class TransactionManager(threading.Thread):
                 transactionclass = INVITEserverTransaction
             else:
                 transactionclass = NonINVITEserverTransaction
-#            request.dialog = Dialog.Dialog(request)
             transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
             return transaction
 
     def newclienttransaction(self, request, addr=None):
-#        if request.dialog:
-#            if addr is None:
-#                addr = request.dialog.addr
-#        else:
-#            if addr is None:
-#                raise Exception("Missing addr for non in-Dialog request")
-#            request.dialog = Dialog.Dialog(request, addr)
         request.enforceheaders()
         with self.lock:
             if isinstance(request, Message.INVITE):
@@ -80,6 +71,7 @@ class TransactionManager(threading.Thread):
             for transaction in self.transactions:
                 if transaction.id == transaction.identifier(message):
                     return transaction
+
     def run(self):
         while True:
             message = self.transport.recv()
@@ -147,7 +139,6 @@ class Transaction:
     def __init__(self, request, transport, addr=None, *, T1, T2, T4):
         self.id = self.identifier(request)
         self.request = request
-#        self.dialog = request.dialog
         self.transport = transport
         self.addr = addr
         self.T1 = T1
