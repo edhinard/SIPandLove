@@ -63,9 +63,10 @@ class Transport(multiprocessing.Process):
             protocol = "TCP+UDP"
         return "{}/{}:{}".format(protocol, self.localip, self.localport)
 
-    def send(self, message, addr=(None,5060), protocol=None):
+    def send(self, message, addr=None, protocol=None):
         if not isinstance(message, Message.SIPMessage):
             raise TypeError("expecting SIPMessage subclass as message")
+        addr = addr or (None,5060)
         if isinstance(addr, (list,tuple)):
             if len(addr) != 2:
                 raise Exception("expecting 2 values in addr, got {!r}".format(addr))

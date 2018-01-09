@@ -38,7 +38,7 @@ class TransactionManager(threading.Thread):
         with self.lock:
             transaction = self.transactionmatching(message)
             if transaction:
-                transaction.eventerror(message)
+                transaction.eventerror(err)
 
     def newservertransaction(self, request):
         if isinstance(request, Message.INVITE):
@@ -82,18 +82,19 @@ class TransactionManager(threading.Thread):
                     with self.lock:
                         self.transactions.remove(transaction)
                 if isinstance(transaction, INVITEclientTransaction) \
-                   and transaction.finalresponse \
-                   and transaction.finalresponse.familycode == 2:
+                   and transaction.lastresponse \
+                   and transaction.lastresponse.familycode == 2:
                     ack = transaction.request.ack(message)
                     addr = transaction.addr
                     newtransaction = ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
                     with self.lock:
                         self.transactions.append(newtransaction)
                 if isinstance(transaction, INVITEserverTransaction) \
-                   and transaction.finalresponse \
-                   and transaction.finalresponse.familycode == 2:
-                    response = transaction.finalresponse
+                   and transaction.lastresponse \
+                   and transaction.lastresponse.familycode == 2:
+                    response = transaction.lastresponse
                     newtransaction = ACKserverTransaction(invite, self.transport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
+                    XXXXXX_invite_XXXXXX
                     with self.lock:
                         self.transactions.append(newtransaction)
 
@@ -138,9 +139,16 @@ class Handler(threading.Thread):
             self.transaction.eventmessage(response)
 
 class Timeout(Exception):
-    pass
+    def __init__(self, timer):
+        self.timer = timer
+    def __str__(self):
+        return "Timer {} fired".format(self.timer)
+
 class TransportError(Exception):
-    pass
+    def __init__(self, error):
+        self.error = error
+    def __str__(self):
+        return "Transport error {}".format(self.error)
 
 class Transaction:
     def __init__(self, request, transport, addr=None, *, T1, T2, T4):
@@ -152,9 +160,9 @@ class Transaction:
         self.T2 = T2
         self.T4 = T4
         self.lock = threading.Lock()
-        self.lastrequest = self.lastresponse = self.lastevent = None
-        self.finalresponse = None
-        self._final = threading.Event()
+        self.lastrequest = self.lastresponse = None
+        self.events = []
+        self.eventsemaphore = threading.Semaphore(0)
         with self.lock:
             self.init()
         log.info("%s <-- New transaction", self)
@@ -162,23 +170,15 @@ class Transaction:
     def __str__(self):
         return "{}-{}".format("/".join(self.id), self.state)
 
-    def _getfinal(self):
-        return self._final.is_set()
-    def _setfinal(self, v):
-        if v:
-            self._final.set()
-            if self.lastevent == self.lastresponse and self.lastresponse.familycode > 1:
-                self.finalresponse = self.lastresponse
-        else:
-            self._final.clear()
-    final = property(_getfinal, _setfinal)
-
     def _getterminated(self):
         return self.state == 'Terminated'
     terminated = property(_getterminated)
-    
+
     def wait(self):
-        self._final.wait()
+        self.eventsemaphore.acquire()
+        with self.lock:
+            event = self.events.pop(0)
+        return event
 
     def armtimer(self, name, duration):
         Timer.arm(duration, self.eventtimer, name, self.state)
@@ -200,19 +200,29 @@ class Transaction:
                 if request:
                     log.info("%s <-- %s", self, request.METHOD)
                     self.lastrequest = request
-                self.lastevent = message
-                eventcb()
+                informTU = eventcb()
+                if informTU:
+                    self.events.append(message)
+                    self.eventsemaphore.release()
                 if self.state != state:
                     log.info(self)
+                    if self.state == 'Terminated':
+                        self.events.append(None)
+                        self.eventsemaphore.release()
 
-    def eventerror(self, message):
+    def eventerror(self, err):
         with self.lock:
             eventcb = getattr(self, '{}_Error'.format(self.state), None)
             if eventcb:
-                log.info("%s <-- Transport error", self)
-                self.lastevent = TransportError()
-                eventcb()
+                log.info("%s <-- Transport error {}", self, err)
+                informTU = eventcb()
+                if informTU:
+                    self.events.append(TransportError(err))
+                    self.eventsemaphore.release()
                 log.info(self)
+                if self.state == 'Terminated':
+                    self.events.append(None)
+                    self.eventsemaphore.release()
 
     def eventtimer(self, name, state):
         with self.lock:
@@ -220,11 +230,15 @@ class Transaction:
                 eventcb = getattr(self, '{}_Timer{}'.format(self.state, name), None)
                 if eventcb:
                     log.info("%s <-- Timer %s", self, name)
-                    if name in ('B', 'F', 'H'):
-                        self.lastevent = Timeout()
-                    eventcb()
+                    informTU = eventcb()
+                    if informTU:
+                        self.events.append(Timeout(name))
+                        self.eventsemaphore.release()
                     if self.state != state:
                         log.info(self)
+                        if self.state == 'Terminated':
+                            self.events.append(None)
+                            self.eventsemaphore.release()
 
 class ClientTransaction(Transaction):
     @staticmethod
@@ -310,51 +324,51 @@ class INVITEclientTransaction(ClientTransaction):
         self.transport.send(self.request, self.addr)
         self.Aduration *= 2
         self.armtimer('A', self.Aduration)
-        
+
     def Calling_TimerB(self):
         self.state = 'Terminated'
-        self.final = True
+        return True
     Calling_Error = Calling_TimerB
 
     def Calling_1xx(self):
         self.state = 'Proceeding'
+        return True
 
     def Calling_2xx(self):
         self.state = 'Terminated'
-        self.final = True
-        
+        return True
+
     def Calling_3456(self):
-        self.transport.send(self.request.ack(self.lastevent), self.addr)
+        self.transport.send(self.request.ack(self.lastresponse), self.addr)
         self.state = 'Completed'
         self.armtimer('D', 32)
-        self.final = True
+        return True
     Calling_3xx = Calling_4xx = Calling_5xx = Calling_6xx = Calling_3456
-        
+
     def Proceeding_1xx(self):
-        pass
-        
+        return True
+
     def Proceeding_2xx(self):
         self.state = 'Terminated'
-        self.final = True
-        
+        return True
+
     def Proceeding_3456(self):
-        self.transport.send(self.request.ack(self.lastevent), self.addr)
+        self.transport.send(self.request.ack(self.lastresponse), self.addr)
         self.armtimer('D', 32)
         self.state = 'Completed'
-        self.final = True
+        return True
     Proceeding_3xx = Proceeding_4xx = Proceeding_5xx = Proceeding_6xx = Proceeding_3456
 
     def Completed_3456(self):
-        self.transport.send(self.request.ack(self.lastevent), self.addr)
+        self.transport.send(self.request.ack(self.lastresponse), self.addr)
     Completed_3xx = Completed_4xx = Completed_5xx = Completed_6xx = Completed_3456
 
     def Completed_TimerD(self):
         self.state = 'Terminated'
-        self.final = True
-        
-    def Calling_Error(self):
+
+    def Completed_Error(self):
         self.state = 'Terminated'
-        self.final = True
+        return True
 
 #                               |ACK from TU
 #                               |ACK sent
@@ -378,7 +392,6 @@ class ACKclientTransaction(ClientTransaction):
 
     def Proceeding_TimerB(self):
         self.state = 'Terminated'
-        self.final = True
     Proceeding_Error = Proceeding_TimerB
 
     def Proceeding_2xx(self):
@@ -438,44 +451,44 @@ class NonINVITEclientTransaction(ClientTransaction):
         self.transport.send(self.request, self.addr)
         self.Eduration = min(2*self.Eduration, self.T2)
         self.armtimer('E', self.Eduration)
-        
+
     def Trying_TimerF(self):
         self.state = 'Terminated'
-        self.final = True
+        return True
     Trying_Error = Trying_TimerF
 
     def Trying_1xx(self):
         self.state = 'Proceeding'
         self.armtimer('E', self.T2)
         self.armtimer('F', 64*self.T1)
+        return True
 
     def Trying_23456(self):
         self.state = 'Completed'
         self.armtimer('K', self.T4)
-        self.final = True
+        return True
     Trying_2xx = Trying_3xx = Trying_4xx = Trying_5xx = Trying_6xx = Trying_23456
 
     def Proceeding_TimerE(self):
         self.transport.send(self.request, self.addr)
         self.armtimer('E', self.T2)
-        
+
     def Proceeding_TimerF(self):
         self.state = 'Terminated'
-        self.final = True
+        return True
     Proceeding_Error = Proceeding_TimerF
 
     def Proceeding_1xx(self):
-        pass
+        return True
 
     def Proceeding_23456(self):
         self.state = 'Completed'
         self.armtimer('K', self.T4)
-        self.final = True
+        return True
     Proceeding_2xx = Proceeding_3xx = Proceeding_4xx = Proceeding_5xx = Proceeding_6xx = Proceeding_23456
 
     def Completed_TimerK(self):
         self.state = 'Terminated'
-        self.final = True
 
 #                               |INVITE
 #                               |pass INV to TU
@@ -549,6 +562,7 @@ class INVITEserverTransaction(ServerTransaction):
 
     def Proceeding_Error(self):
         self.state = 'Terminated'
+        return True
 
     Completed_Request = Proceeding_Request
 
@@ -559,6 +573,7 @@ class INVITEserverTransaction(ServerTransaction):
 
     def Completed_TimerH(self):
         self.state = 'Terminated'
+        return True
     Completed_Error = Completed_TimerH
 
     def Completed_Request(self):
@@ -591,7 +606,7 @@ class INVITEserverTransaction(ServerTransaction):
 
 class ACKserverTransaction(ServerTransaction):
     def __init__(self, *args, response2xx, **kwargs):
-        Transaction.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.lastresponse = response2xx
 
     def init(self):
@@ -607,12 +622,10 @@ class ACKserverTransaction(ServerTransaction):
 
     def Completed_TimerH(self):
         self.state = 'Terminated'
-        self.final = True
 
     def Completed_Request(self):
         if self.lastrequest.METHOD == 'ACK':
             self.state = 'Terminated'
-            self.final = True
         else:
             log.warning("%s expecting ACK. Request ignored", self)
 
@@ -684,6 +697,7 @@ class NonINVITEserverTransaction(ServerTransaction):
 
     def Proceeding_Error(self):
         self.state = 'Terminated'
+        return True
         
     Proceeding_2xx = Proceeding_3xx = Proceeding_4xx = Proceeding_5xx = Proceeding_6xx = Trying_23456
 

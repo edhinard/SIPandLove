@@ -37,13 +37,30 @@ class UAbase(Transaction.TransactionManager):
     def __str__(self):
         return str(self.contacturi)
 
-    def sendmessageandwaitforresponse(self, message):
+    class Result:
+        def __init__(self, event):
+            self.success = self.provisional = self.error = self.exception = None
+            if isinstance(event, Message.SIPResponse):
+                if event.familycode == 2:
+                    self.success = event
+                elif event.familycode == 1:
+                    self.provisional = event
+                else:
+                    self.error = event
+            elif isinstance(event, Exception):
+                self.exception = event
+
+    def sendmessage(self, message):
         transaction = self.newclienttransaction(message, self.proxy)
-        transaction.wait()
-        if not transaction.finalresponse:
-            raise transaction.lastevent
-        return transaction.finalresponse
-    
+        while True:
+            event = transaction.wait()
+            if event is None:
+                return
+            result = UAbase.Result(event)
+            yield result
+            if not result.provisional:
+                return
+
     def options(self):
         log.info("%s querying for capabilities", self)
         options = Message.OPTIONS(
@@ -52,43 +69,39 @@ class UAbase(Transaction.TransactionManager):
             'To: {}'.format(self.addressofrecord),
             'Content-Type: application/sdp'
         )
-        try:
-            finalresponse = self.sendmessageandwaitforresponse(options)
-        except Exception as e:
-            log.info("%s querying failed: %s", self, e)
-            return
-        if finalresponse.familycode != 2:
-            log.info("%s querying failed: %d %s", self, finalresponse.code, finalresponse.reason)
-            return
-        log.info("%s query ok", self)
+        for result in self.sendmessage(options):
+            if result.success:
+                log.info("%s query ok", self)
+            elif result.error:
+                log.info("%s querying failed: %d %s", self, result.error.code, result.error.reason)
+            elif result.provisional:
+                pass
+            elif result.exception:
+                log.info("%s querying failed: %s", self, result.exception)
 
 
-class AuthenticationError(Exception):
-    pass
 class AuthenticationMixin:
     def mixininit(self, credentials=None, **kwargs):
         self.credentials = credentials
         return kwargs
-    def sendmessageandwaitforresponse(self, message):
-        transaction = self.newclienttransaction(message, self.proxy)
-        transaction.wait()
-        if transaction.finalresponse and transaction.finalresponse.code in (401, 407):
-            if self.credentials is None:
-                log.warning("no credential provided at initialization")
+    def sendmessage(self, message):
+        for result in UAbase.sendmessage(self, message):
+            if result.error and result.error.code in (401, 407):
+                if self.credentials is None:
+                    log.warning("%s no credential provided at initialization", self)
+                    yield result
+                else:
+                    log.info("%s %d retrying %s with authentication", self, result.error.code, message.METHOD)
+                    auth = message.authenticationheader(result.error, **self.credentials)
+                    if auth.header is None:
+                        yield UAbase.Result(Exception(auth.error))
+                        return
+                    message.addheaders(auth.header, replace=True)
+                    message.newbranch()
+                    yield from UAbase.sendmessage(self, message)
+                    return
             else:
-                log.info("%s %d retrying %s with authentication", self, transaction.finalresponse.code, message.METHOD)
-                auth = message.authenticationheader(transaction.finalresponse, **self.credentials)
-                if auth.header is None:
-                    raise AuthenticationError(auth.error)
-                message.addheaders(auth.header, replace=True)
-                message.newbranch()
-                transaction = self.newclienttransaction(message, self.proxy)
-                transaction.wait()
-        if not transaction.finalresponse:
-            raise transaction.lastevent
-        if transaction.finalresponse.code in (401, 407):
-            raise AuthenticationError("{} {}".format(transaction.finalresponse.code, transaction.finalresponse.reason))
-        return transaction.finalresponse
+                yield result
 
 
 class RegistrationMixin:
@@ -127,49 +140,73 @@ class RegistrationMixin:
         else:
             self.regcallid = register.callid
             self.regseq = register.seq
-        try:
-            finalresponse = self.sendmessageandwaitforresponse(register)
-        except Exception as e:
-            log.info("%s registering failed: %s", self, e)
-            self.registered = False
-            return self.registered
-        if finalresponse.code == 423:
-            minexpires = finalresponse.getheader('Min-Expires')
-            log.info("%s registering failed: %s %s, %r", self, finalresponse.code, finalresponse.reason, minexpires)
-            if minexpires:
-                return self._register(minexpires.delta)
-            else:
-                return
-        if finalresponse.familycode != 2:
-            log.info("%s registering failed: %s %s", self, finalresponse.code, finalresponse.reason)
-            return
 
-        expiresheader = finalresponse.getheader('Expires')
-        if expiresheader:
-            gotexpires = expiresheader.delta
-        contactheader = finalresponse.getheader('Contact')
-        if contactheader:
-            gotexpires = contactheader.params.get('expires')
-        if gotexpires > 0:
-            self.registered = True
-            log.info("%s registered for %ds", self, gotexpires)
-            Timer.arm(duration=gotexpires//2, cb=self.register, expires=expires, async=True)
-        else:
-            self.registered = False
-            log.info("%s unregistered", self)
-        return self.registered
+        for result in self.sendmessage(register):
+            if result.success:
+                expiresheader = result.success.getheader('Expires')
+                if expiresheader:
+                    gotexpires = expiresheader.delta
+                contactheader = result.success.getheader('Contact')
+                if contactheader:
+                    gotexpires = contactheader.params.get('expires')
+                if gotexpires > 0:
+                    self.registered = True
+                    log.info("%s registered for %ds", self, gotexpires)
+                    Timer.arm(duration=gotexpires//2, cb=self.register, expires=expires, async=True)
+                else:
+                    self.registered = False
+                    log.info("%s unregistered", self)
+                return self.registered
+
+            elif result.error:
+                if result.error.code == 423:
+                    minexpires = result.error.getheader('Min-Expires')
+                    log.info("%s registering failed: %s %s, %r", self, result.error.code, result.error.reason, minexpires)
+                    if minexpires:
+                        return self.register(minexpires.delta)
+                    else:
+                        return self.registered
+
+                else:
+                    log.info("%s registering failed: %s %s", self, result.error.code, result.error.reason)
+                    return self.registered
+
+            elif result.provisional:
+                pass
+
+            elif result.exception:
+                log.info("%s registering failed: %s", self, result.exception)
+                return self.registered
 
 
 class SessionMixin:
     def mixininit(self, mediaargs={}, **kwargs):
         self.mediaargs = mediaargs
-        self.session = None
+        self.sessions = []
+        self.lock = threading.Lock()
         return kwargs
 
-    def invite(self, touri, *headers):
-        if self.session:
-            raise Exception("session in progress")
+    def addsession(self, dialog, media):
+        with self.lock:
+            self.sessions.append((dialog, media))
+    def getsession(self, key, pop=False):
+        with self.lock:
+            for i,(dialog,media) in enumerate(self.sessions):
+                if isinstance(key, str) and dialog.ident == key:
+                    break
+                if isinstance(key, Dialog.Dialog) and dialog == key:
+                    break
+                if isinstance(key, Media.Media) and media == key:
+                    break
+            else:
+                raise KeyError("no such session {!r}".format(key))
+            if pop:
+                del self.sessions[i]
+            return dialog,media
+    def popsession(self, key):
+        return self.getsession(key, pop=True)
 
+    def invite(self, touri, *headers):
         if isinstance(touri, SIPPhone):
             touri = touri.addressofrecord
         invite = Message.INVITE(touri, *headers)
@@ -181,30 +218,35 @@ class SessionMixin:
         media = Media.Media(ip=self.transport.localip, **self.mediaargs)
         invite.setbody(*media.getlocaloffer())
         log.info("%s inviting %s", self, touri)
-        try:
-            finalresponse = self.sendmessageandwaitforresponse(invite)
-        except Exception as e:
-            log.info("%s invitation failed: %s", self, e)
-            return
-        if finalresponse.familycode != 2:
-            log.info("%s invitation failed: %s %s", self, finalresponse.code, finalresponse.reason)
-            return
-        log.info("%s invitation ok", self)
-        session = Dialog.Session(self, invite, finalresponse, media)
-        if not media.setremoteoffer(finalresponse.body):
-            log.info("%s incompatible codecs -> bying", self)
-            session.bye()
-            return
-        self.session = session
-        return self.session
+        for result in self.sendmessage(invite):
+            if result.success:
+                log.info("%s invitation ok", self)
+                dialog = Dialog.Dialog(invite, result.success)
+                self.addsession(dialog, media)
 
+                if not media.setremoteoffer(result.success.body):
+                    log.info("%s incompatible codecs -> bying", self)
+                    self.bye(dialog)
+                    return
+                return dialog
+
+            elif result.error:
+                log.info("%s invitation failed: %s %s", self, result.error.code, result.error.reason)
+                return
+
+            elif result.provisional:
+                pass
+
+            elif result.exception:
+                log.info("%s invitation failed: %s", self, result.exception)
+                return
 
     def INVITE_handler(self, invite):
         ident = Dialog.UASid(invite)
         if not ident:
             # out of dialog invitation
             log.info("%s invited by %s", self, invite.getheader('f').address)
-            if self.session:
+            if len(self.sessions) > 3:
                 log.info("%s busy -> rejecting", self)
                 return invite.response(481)
             media = Media.Media(ip=self.transport.localip, **self.mediaargs)
@@ -214,23 +256,53 @@ class SessionMixin:
             log.info("%s accept invitation", self)
             response = invite.response(200, 'Contact: {}'.format(self.contacturi))
             response.setbody(*media.getlocaloffer())
-            self.session = Dialog.Session(self, response, invite, media)
+            dialog = Dialog.Dialog(response, invite)
+            self.addsession(dialog, media)
             return response
 
-        if not self.session or ident != self.session.ident:
+        try:
+            dialog,media = self.getsession(ident)
+        except:
             log.info("%s invalid invitation by %s", self, invite.getheader('f').address)
             return invite.response(481)
 
-        return self.session.invitehandler(invite)
+    def bye(self, dialog):
+        dialog,media = self.popsession(dialog)
+
+        log.info("%s closing locally", self)
+        dialog.localseq += 1
+        bye = Message.BYE(dialog.remotetarget,
+                         'to:{};tag={}'.format(dialog.remotetarget, dialog.remotetag),
+                         'from:{};tag={}'.format(dialog.localtarget, dialog.localtag),
+                         'call-id:{}'.format(dialog.callid),
+                         'cseq: {} BYE'.format(dialog.localseq))
+        media.stop()
+        for result in self.sendmessage(bye):
+            if result.success:
+                log.info("%s closing ok", self)
+                return
+
+            elif result.error:
+                log.info("%s closing failed: %s %s", self, result.error.code, result.error.reason)
+                return
+
+            elif result.provisional:
+                pass
+
+            elif result.exception:
+                log.info("%s closing failed: %s", self, result.exception)
+                return
 
     def BYE_handler(self, bye):
         ident = Dialog.UASid(bye)
-        if not self.session or ident != self.session.ident:
+        try:
+            dialog,media = self.popsession(ident)
+        except:
             return bye.response(481)
 
-        resp = self.session.byehandler(bye)
-        self.session = None
-        return resp
+        log.info("%s closed by remote", self)
+        media.stop()
+        return bye.response(200)
 
 class SIPPhone(SessionMixin, RegistrationMixin, AuthenticationMixin, UAbase):
     pass
