@@ -41,30 +41,30 @@ class TransactionManager(threading.Thread):
                 transaction.eventerror(message)
 
     def newservertransaction(self, request):
+        if isinstance(request, Message.INVITE):
+            transactionclass = INVITEserverTransaction
+        else:
+            transactionclass = NonINVITEserverTransaction
+        transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
         with self.lock:
-            if isinstance(request, Message.INVITE):
-                transactionclass = INVITEserverTransaction
-            else:
-                transactionclass = NonINVITEserverTransaction
-            transaction = transactionclass(request, self.transport, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
-            return transaction
+        return transaction
 
-    def newclienttransaction(self, request, addr=None):
+    def newclienttransaction(self, request, addr):
         request.enforceheaders()
+        if isinstance(request, Message.INVITE):
+            transactionclass = INVITEclientTransaction
+        else:
+            transactionclass = NonINVITEclientTransaction
+        if request.METHOD not in ('ACK', 'CANCEL') and self.allow:
+            request.addheaders(
+                'Allow: {}'.format(', '.join(self.allow)),
+                ifmissing=True
+            )
+        transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
         with self.lock:
-            if isinstance(request, Message.INVITE):
-                transactionclass = INVITEclientTransaction
-            else:
-                transactionclass = NonINVITEclientTransaction
-            if request.METHOD not in ('ACK', 'CANCEL') and self.allow:
-                request.addheaders(
-                    'Allow: {}'.format(', '.join(self.allow)),
-                    ifmissing=True
-                )
-            transaction = transactionclass(request, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
             self.transactions.append(transaction)
-            return transaction
+        return transaction
 
     def transactionmatching(self, message):
         with self.lock:
@@ -79,20 +79,23 @@ class TransactionManager(threading.Thread):
             if transaction:
                 transaction.eventmessage(message)
                 if transaction.terminated:
-                    self.transactions.remove(transaction)
+                    with self.lock:
+                        self.transactions.remove(transaction)
                 if isinstance(transaction, INVITEclientTransaction) \
                    and transaction.finalresponse \
                    and transaction.finalresponse.familycode == 2:
                     ack = transaction.request.ack(message)
                     addr = transaction.addr
                     newtransaction = ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
-                    self.transactions.append(newtransaction)
+                    with self.lock:
+                        self.transactions.append(newtransaction)
                 if isinstance(transaction, INVITEserverTransaction) \
                    and transaction.finalresponse \
                    and transaction.finalresponse.familycode == 2:
                     response = transaction.finalresponse
                     newtransaction = ACKserverTransaction(invite, self.transport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
-                    self.transactions.append(newtransaction)
+                    with self.lock:
+                        self.transactions.append(newtransaction)
 
             else:
                 if isinstance(message, Message.SIPResponse):
@@ -111,6 +114,10 @@ class TransactionManager(threading.Thread):
                         Handler(self, handler, transaction, message)
                 else:
                     pass
+
+            with self.lock:
+                self.transactions = [transaction for transaction in self.transactions if not transaction.terminated]
+
 
 class Handler(threading.Thread):
     def __init__(self, transactionmanager, handler, transaction, request):
