@@ -36,10 +36,10 @@ class Media(threading.Thread):
         17:('DVI4/22050',  None),
         18:('G729/8000',   None)}
 
-    def __init__(self, localip, localport, pcapfilename=None, pcapfilter=None):
-        self.localip = localip
+    def __init__(self, ip, port=None, pcapfilename=None, pcapfilter=None):
+        self.localip = ip
         self.localport = None
-        self.wantedlocalport = localport or 0
+        self.wantedlocalport = port or 0
         self.pcapfilename = pcapfilename
         self.pcapfilter = pcapfilter
         self.codecs = [(payloadtype, codecname, codecformat) for payloadtype,(codecname, codecformat) in Media.defaultcodecs.items()]

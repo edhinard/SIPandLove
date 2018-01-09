@@ -17,7 +17,6 @@ from . import Dialog
 class UAbase(Transaction.TransactionManager):
     def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None, **kwargs):
         super().__init__(transport, T1, T2, T4)
-
         self.proxy = proxy
         self.domain = domain
         self.addressofrecord = addressofrecord
@@ -26,11 +25,12 @@ class UAbase(Transaction.TransactionManager):
         self.contacturi.port = self.transport.localport
 
         # call init function of mixins, in reverse MRO and only once
-        called = set()
+        called = []
         for klass in reversed(self.__class__.mro()):
-            if hasattr(klass, 'mixininit') and not klass.mixininit in called:
-                kwargs = klass.mixininit(self, **kwargs)
-                called.add(klass.mixininit)
+            init = getattr(klass, 'mixininit', None)
+            if init and init not in called:
+                kwargs = init(self, **kwargs)
+                called.append(init)
         if kwargs:
             log.warning("got unexpected keyword argument {!r}".format(tuple(kwargs.keys())))
 
@@ -161,12 +161,9 @@ class RegistrationMixin:
 
 
 class SessionMixin:
-    def mixininit(self, mediaip=None, mediaport=None, pcapfilename=None, pcapfilter=None, **kwargs):
+    def mixininit(self, mediaargs={}, **kwargs):
+        self.mediaargs = mediaargs
         self.session = None
-        self.mediaip = mediaip or self.transport.localip
-        self.mediaport = mediaport
-        self.pcapfilename = pcapfilename
-        self.pcapfilter = pcapfilter
         return kwargs
 
     def invite(self, touri, *headers):
@@ -181,9 +178,9 @@ class SessionMixin:
             'Contact: {}'.format(self.contacturi),
             ifmissing=True
         )
-        media = Media.Media(self.mediaip, self.mediaport, self.pcapfilename, self.pcapfilter)
+        media = Media.Media(ip=self.transport.localip, **self.mediaargs)
         invite.setbody(*media.getlocaloffer())
-        log.info("%s inviting %s with %s", self, touri, invite.getheader('Content-Type'))
+        log.info("%s inviting %s", self, touri)
         try:
             finalresponse = self.sendmessageandwaitforresponse(invite)
         except Exception as e:
@@ -201,6 +198,7 @@ class SessionMixin:
         self.session = session
         return self.session
 
+
     def INVITE_handler(self, invite):
         ident = Dialog.UASid(invite)
         if not ident:
@@ -209,7 +207,7 @@ class SessionMixin:
             if self.session:
                 log.info("%s busy -> rejecting", self)
                 return invite.response(481)
-            media = Media.Media(self.mediaip, self.mediaport, self.pcapfilename, self.pcapfilter)
+            media = Media.Media(ip=self.transport.localip, **self.mediaargs)
             if not media.setremoteoffer(invite.body):
                 log.info("%s incompatible codecs -> rejecting", self)
                 return invite.response(488)

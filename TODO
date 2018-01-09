@@ -125,4 +125,82 @@ SIPBNF des paramètres et donc une documentation plus simple
 
 
 message.popheader(name)
-headers.pop(name) 
+   headers.pop(name)
+
+
+
+
+* DISCUSSION
+   API phone :
+   
+   idA = dict(
+    transport=
+    proxy=
+    domain=
+    addressofrecord=
+    credentials=dict(username=, password=)
+    sessionargs(port=123, pcap='xxx.pcap')
+   )
+   phoneA = snl.SIPPhone(**idA)
+   phoneA.register()
+   phoneB = snl.SIPPhone(**idB)
+   phoneB.register()
+
+
+
+   
+   # A appelle B et diffuse son pcap
+   dialog = phoneA.invite(phoneB)
+
+   
+   # re-invite dans le même dialogue pour modifier le flux
+   phoneA.invite(dialog=dialog)
+
+
+
+
+** modifs à court terme :
+
+* TransactionManager
+-seul le handler invite doit être déporté dans un thread
+-la réponse 100 trying automatique ne doit pas se faire dans le
+   constructeur de l'objet inviteservertransaction (cas de la réponse
+   603 decline)
+-un Transport est lié à un TransactionManager
+
+* UA
+-media toujours démarré
+-si pas de port media imposé il est fourni par l'objet media à la
+   création de la réponse getlocaloffer
+-si pas de rtp, pas d'émission de paquets
+
+   
+
+
+** à long terme:
+
+* classe Session
+-généralisation ultérieure en tant que classe dérivée
+   d'un Dialog
+-Contient un Media et un RTP. Media s'exécute dans un process à
+   part pour une bonne gestion des intervalles de temps. Le RTP reste
+   dans le process principal pour échanger avec l'UA (déclenchement
+   d'un BYE à l'issue de la diffusion du fichier audio). Donc echange
+   entre Media et RTP par un double pipe (idem
+   Transport/TransactionManager)
+-API
+   
+-Session(audiofile ou rtp, mediaport=, endcb=)
+   endcb appellée à la fin du fichier audio/rtp
+-getlocaloffer() -> SDP
+   prêt à recevoir du flux (=Process Media lancé)
+-setremoteoffer(dsp) -> erreur si aucun codec commun
+-start()
+-stop()
+   
+
+   
+   
+
+
+   
