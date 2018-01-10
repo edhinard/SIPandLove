@@ -215,7 +215,7 @@ class SessionMixin:
             'Contact: {}'.format(self.contacturi),
             ifmissing=True
         )
-        media = Media.Media(ip=self.transport.localip, **self.mediaargs)
+        media = Media.Media(self, **self.mediaargs)
         invite.setbody(*media.getlocaloffer())
         log.info("%s inviting %s", self, touri)
         for result in self.sendmessage(invite):
@@ -249,7 +249,7 @@ class SessionMixin:
             if len(self.sessions) > 3:
                 log.info("%s busy -> rejecting", self)
                 return invite.response(481)
-            media = Media.Media(ip=self.transport.localip, **self.mediaargs)
+            media = Media.Media(self, **self.mediaargs)
             if not media.setremoteoffer(invite.body):
                 log.info("%s incompatible codecs -> rejecting", self)
                 return invite.response(488)
@@ -266,8 +266,12 @@ class SessionMixin:
             log.info("%s invalid invitation by %s", self, invite.getheader('f').address)
             return invite.response(481)
 
-    def bye(self, dialog):
-        dialog,media = self.popsession(dialog)
+    def bye(self, key):
+        try:
+            dialog,media = self.popsession(key)
+        except Exception as e:
+            log.warning(e)
+            return
 
         log.info("%s closing locally", self)
         dialog.localseq += 1

@@ -36,8 +36,10 @@ class Media(threading.Thread):
         17:('DVI4/22050',  None),
         18:('G729/8000',   None)}
 
-    def __init__(self, ip, port=None, pcapfilename=None, pcapfilter=None):
-        self.localip = ip
+    def __init__(self, ua, ip=None, port=None, pcapfilename=None, pcapfilter=None):
+        self.ua = ua
+        self.stopped = False
+        self.localip = ip or ua.transport.localip
         self.localport = None
         self.wantedlocalport = port or 0
         self.pcapfilename = pcapfilename
@@ -73,7 +75,7 @@ class Media(threading.Thread):
         self.pipe.send(('opensocket', (localip, localport)))
         localportorexc = self.pipe.recv()
         if isinstance(localportorexc, Exception):
-            log.error(localportorexc)
+            log.error("%s %s", self.process, localportorexc)
             raise localportorexc
         self.localport = localportorexc
 
@@ -95,19 +97,19 @@ class Media(threading.Thread):
         self.pipe.send(('starttransmit',((remoteip, remoteport), (pcapfilename, pcapfilter))))
         ackorexc = self.pipe.recv()
         if isinstance(ackorexc, Exception):
-            log.error(ackorexc)
+            log.error("%s %s", self.process, ackorexc)
             raise ackorexc
 
     def stop(self):
+        self.stopped = True
         self.pipe.send(('stop', None))
-#        self.pipe.recv()
-
-#    def wait(self):
-#        self.pipe.recv()
+        self.pipe.recv()
 
     # Thread loop
     def run(self):
         self.lock.acquire()
+        if not self.stopped:
+            self.ua.bye(self)
 
 class MediaProcess(multiprocessing.Process):
     def __init__(self, pipe, lock):
@@ -172,20 +174,24 @@ class MediaProcess(multiprocessing.Process):
                         localaddr = param
                         try:
                             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        except Exception as exc:
-                            self.pipe.send(exc)
-                        try:
-                            sock.bind(localaddr)
-                            localport = sock.getsockname()[1]
-                        except OSError as err:
-                            exc = Exception("cannot bind UDP socket to {}. errno={}".format(localaddr, errno.errorcode[err.errno]))
-                            self.pipe.send(exc)
                         except Exception as exc:
                             self.pipe.send(exc)
                         else:
-                            self.pipe.send(localport)
-                        log.info("%s start listenning on %s:%d", self, *sock.getsockname())
+                            try:
+                                sock.bind(localaddr)
+                                localport = sock.getsockname()[1]
+                            except OSError as err:
+                                sock.close()
+                                sock = None
+                                exc = Exception("cannot bind UDP socket to {}. errno={}".format(localaddr, errno.errorcode[err.errno]))
+                                self.pipe.send(exc)
+                            except Exception as exc:
+                                sock.close()
+                                sock = None
+                                self.pipe.send(exc)
+                            else:
+                                self.pipe.send(localport)
+                                log.info("%s start listenning on %s:%d", self, *sock.getsockname())
 
                     elif command == 'starttransmit':
                         remoteaddr,pcap = param
@@ -193,11 +199,12 @@ class MediaProcess(multiprocessing.Process):
                             rtpstream = RTPStream(*pcap)
                         except Exception as exc:
                             self.pipe(exc)
-                        transmitting = True
-                        refrtptime = time.monotonic()
-                        wakeuptime = time.monotonic()
-                        self.pipe.send('started')
-                        log.info("%s start transmitting to %s:%d", self, *remoteaddr)
+                        else:
+                            transmitting = True
+                            refrtptime = time.monotonic()
+                            wakeuptime = time.monotonic()
+                            self.pipe.send('started')
+                            log.info("%s start transmitting to %s:%d", self, *remoteaddr)
 
                     elif command == 'stop':
                         transmitting = False
@@ -215,6 +222,7 @@ class MediaProcess(multiprocessing.Process):
                 if wakeuptime < 0:
                     transmitting = False
                     running = False
+                    log.info("%s %s:%-5d ---| %s:%-5d EOS", self, *sock.getsockname(), *remoteaddr)
                 else:
                     wakeuptime += refrtptime
         # end of while running

@@ -139,7 +139,6 @@ class Transport(multiprocessing.Process):
                 
     def run(self):
         maintcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        maintcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             maintcp.bind((self.localip, self.localport))
             maintcp.listen()
@@ -149,7 +148,6 @@ class Transport(multiprocessing.Process):
             return
 
         udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        udp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             udp.bind((self.localip, self.localport))
         except OSError as err:
