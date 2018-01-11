@@ -13,12 +13,11 @@ from . import Transport
 class TransactionManager(threading.Thread):
     def __init__(self, transport, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
-        Transport.errorcb = self.transporterror
-
         if isinstance(transport, Transport.Transport):
             self.transport = transport
         else:
             self.transport = Transport.Transport(transport)
+        self.transport.errorcb = self.transporterror
         self.T1 = T1 or .5
         self.T2 = T2 or 4.
         self.T4 = T4 or 5.
@@ -34,11 +33,10 @@ class TransactionManager(threading.Thread):
             self.allow.add('ACK')
         self.start()
 
-    def transporterror(self, err, addr, message):
-        with self.lock:
-            transaction = self.transactionmatching(message)
-            if transaction:
-                transaction.eventerror(err)
+    def transporterror(self, message, err):
+        transaction = self.transactionmatching(message)
+        if transaction:
+            transaction.eventerror(err)
 
     def newservertransaction(self, request):
         if isinstance(request, Message.INVITE):
@@ -148,7 +146,7 @@ class TransportError(Exception):
     def __init__(self, error):
         self.error = error
     def __str__(self):
-        return "Transport error {}".format(self.error)
+        return "Transport error: {}".format(self.error)
 
 class Transaction:
     def __init__(self, request, transport, addr=None, *, T1, T2, T4):
@@ -214,10 +212,11 @@ class Transaction:
         with self.lock:
             eventcb = getattr(self, '{}_Error'.format(self.state), None)
             if eventcb:
-                log.info("%s <-- Transport error {}", self, err)
+                error = TransportError(err)
+                log.info("%s <-- %s", self, error)
                 informTU = eventcb()
                 if informTU:
-                    self.events.append(TransportError(err))
+                    self.events.append(error)
                     self.eventsemaphore.release()
                 log.info(self)
                 if self.state == 'Terminated':

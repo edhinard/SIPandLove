@@ -12,13 +12,12 @@ import fcntl
 import struct
 import logging
 import errno
+import weakref
 log = logging.getLogger('Transport')
 
 from . import Message
 from . import Header
 
-
-errorcb = None
 
 # http://code.activestate.com/recipes/439094
 def get_ip_address(ifname):
@@ -31,6 +30,12 @@ def get_ip_address(ifname):
 
 
 class Transport(multiprocessing.Process):
+    instances = weakref.WeakSet()
+    def __new__(cls, *args, **kwargs):
+        instance = super().__new__(cls)
+        Transport.instances.add(instance)
+        return instance
+
     def __init__(self, localiporinterface, localport=None, tcp_only=False):
         if ':' in localiporinterface:
             localiporinterface,port = localiporinterface.split(':', 1)
@@ -44,7 +49,7 @@ class Transport(multiprocessing.Process):
             self.localip = localiporinterface
         self.localport = localport or 5060
         self.tcp_only = tcp_only
-        self.error = ErrorListener.newlistener(self.localip)
+        self.errorcb = None
         self.pipe,self.childpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self, daemon=True)
         self.start()
@@ -57,11 +62,7 @@ class Transport(multiprocessing.Process):
             raise ret
 
     def __str__(self):
-        if self.tcp_only:
-            protocol = "TCP"
-        else:
-            protocol = "TCP+UDP"
-        return "{}/{}:{}".format(protocol, self.localip, self.localport)
+        return "{}:{}".format(self.localip, self.localport)
 
     def send(self, message, addr=None, protocol=None):
         if not isinstance(message, Message.SIPMessage):
@@ -117,7 +118,7 @@ class Transport(multiprocessing.Process):
         if (protocol == 'TCP' or len(message.body)) and not message.getheader('l'):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
-        log.info("--> %s/%s:%d\n%s", protocol, ip, port, message)
+        log.info("%s --%s-> %s:%d\n%s", self, protocol, ip, port, message)
         self.pipe.send((protocol, (ip, port), message.tobytes()))
 
     def recv(self, timeout=None):
@@ -133,7 +134,7 @@ class Transport(multiprocessing.Process):
                         if 'rport' in via.params:
                             via.params['received'] = ip
                             via.params['rport'] = port
-                log.info("<-- %s/%s:%d\n%s", protocol, ip, port, message)
+                log.info("%s <-%s-- %s:%d\n%s", self, protocol, ip, port, message)
                 return message
         return None
                 
@@ -169,7 +170,8 @@ class Transport(multiprocessing.Process):
                             udp.sendto(packet, remoteaddr)
                         err = None
                     except Exception as e:
-                        self.error.pipein.send((str(e), remoteaddr, packet))
+                        global errordispatcher
+                        errordispatcher.pipein.send((self.localip, self.localport, *remoteaddr, str(e), packet))
                         continue
 
                 # Incomming TCP connection --> new socket added (will be read in the next result of poll)
@@ -261,93 +263,84 @@ class ServiceSockets:
             if currenttime - lasttime[0] > self.TIMEOUT:
                 self.delete(sock)
 
-class ErrorListener(threading.Thread):
-    listeners = {}
-    lock = threading.Lock()
-    warningraw = False
-
-    @staticmethod
-    def newlistener(ip):
-        with ErrorListener.lock:
-            if not ip in ErrorListener.listeners:
-                ErrorListener.listeners[ip] = ErrorListener(ip)
-            return ErrorListener.listeners[ip]
-    
-    def __init__(self, ip):
-        self.pipeout,self.pipein = multiprocessing.Pipe(duplex=False)
-        try:
-            self.rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
-            self.rawsock.bind((ip,0))
-        except:
-            self.rawsock = None
-            if not ErrorListener.warningraw:
-                ErrorListener.warningraw = True
-                log.warning("Cannot open raw socket for ICMP. Administrator privilege needed to do so")
-        threading.Thread.__init__(self, daemon=True)
+class ErrorDispatcher(threading.Thread):
+    def __init__(self):
+        self.pipeout1,icmppipe = multiprocessing.Pipe(duplex=False)
+        self.pipeout2,self.pipein = multiprocessing.Pipe(duplex=False)
+        self.icmp = ICMPProcess(icmppipe)
+        super().__init__(daemon=True)
         self.start()
 
     def run(self):
-        global errorcb
-        if self.rawsock:
-            waitto = (self.rawsock,self.pipeout)
-        else:
-            waitto = (self.pipeout,)
         while True:
-            ready = multiprocessing.connection.wait(waitto)[0]
-
-            # Partially parse ICMP packet received on raw socket and call error callback
-            #  -check it is a type,code combination that should be transmitted to TU
-            #  -check it holds UDP or TCP
-            #  -parse destination IP and port
-            #  -parse SIP message
-            if self.rawsock == ready:
-                packet,addr = self.rawsock.recvfrom(65536)
-                if len(packet) < 20+8+20+8: # IP | ICMP | IP | ...
-                    continue
-                ipproto, = struct.unpack_from('B', packet, 9)
-                if ipproto != 1: # ICMP
-                    continue
-                icmptype, icmpcode = struct.unpack_from('2b', packet, 20)
-                if icmptype == 3: # Destination Unreachable
-                    if icmpcode == 0:
-                        err = "Network Unreachable"
-                    elif icmpcode == 1:
-                        err = "Host Unreachable"
-                    elif icmpcode == 2:
-                        err = "Protocol Unreachable"
-                    elif icmpcode == 3:
-                        err = "Port Unreachable"
-                    else:
-                        continue
-                elif icmptype == 12:
-                    err = "Parameter Problem"
-                else:
-                    continue
-                ip2proto, = struct.unpack_from('B', packet, 20+8+9)
-                if ip2proto == 6: # TCP
-                    message = packet[20+8+20+20:]
-                elif ip2proto == 17: # UDP
-                    message = packet[20+8+20+8:]
-                else:
-                    continue
-                dstip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+16)))
-                dstport, = struct.unpack_from('!H', packet, 20+8+20+2)
-                message = Message.SIPMessage.frombytes(message)
+            for pipe in multiprocessing.connection.wait((self.pipeout1, self.pipeout2)):
+                srcip, srcport, dstip, dstport, err, data = pipe.recv()
+                message = Message.SIPMessage.frombytes(data)
                 if message:
-                    log.info("<-- ERR/%s:%d %s\n%s", dstip, dstport, err, message)
-                    if errorcb:
-                        with ErrorListener.lock:
-                            errorcb(err, (dstip,dstport), message)
+                    for transport in Transport.instances:
+                        if transport.localip == srcip and transport.localport == srcport:
+                            log.info("%s <-ERR-- %s:%d %s\n%s", transport, dstip, dstport, err, message)
+                            if transport.errorcb:
+                                transport.errorcb(message, err)
+                            break
 
-            # Unqueue error from the pipe and call error callback
-            elif self.pipeout == ready:
-                err,addr,message = self.pipeout.recv()
-                message = Message.SIPMessage.frombytes(message)
-                if message:
-                    log.info("<-- ERR/%s:%d %s\n%s", *addr, err, message)
-                    if errorcb:
-                        with ErrorListener.lock:
-                            errorcb(err, addr, message)
+class ICMPProcess(multiprocessing.Process):
+    def __init__(self, pipe):
+        super().__init__(daemon=True)
+        self.pipe = pipe
+        self.start()
+
+    def run(self):
+        try:
+            rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
+        except:
+            log.warning("Cannot open raw socket for ICMP. Administrator privilege needed to do so")
+            return
+
+        while True:
+            # decode ICMP packet seen on socket
+            packet,addr = rawsock.recvfrom(65536)
+            if len(packet) < 20+8+20+8: # IP | ICMP | IP | ...
+                continue # too short
+            ipproto, = struct.unpack_from('B', packet, 9)
+            if ipproto != 1: # ICMP
+                continue # not ICMP
+            icmptype, icmpcode = struct.unpack_from('2b', packet, 20)
+            if icmptype == 3: # Destination Unreachable
+                if icmpcode == 0:
+                    err = "Network Unreachable"
+                elif icmpcode == 1:
+                    err = "Host Unreachable"
+                elif icmpcode == 2:
+                    err = "Protocol Unreachable"
+                elif icmpcode == 3:
+                    err = "Port Unreachable"
+                else:
+                    continue # ignored code
+            elif icmptype == 12:
+                err = "Parameter Problem"
+            else:
+                continue # ignored type
+            ip2proto, = struct.unpack_from('B', packet, 20+8+9)
+            if ip2proto == 6: # TCP
+                data = packet[20+8+20+20:]
+            elif ip2proto == 17: # UDP
+                data = packet[20+8+20+8:]
+            else:
+                continue # ignored transport
+            message = Message.SIPMessage.frombytes(data)
+            if not message:
+                continue # no message
+
+            # send message in ICMP to ErrorDispatcher
+            srcip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+12)))
+            dstip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+16)))
+            dstport, = struct.unpack_from('!H', packet, 20+8+20+2)
+            srcport, = struct.unpack_from('!H', packet, 20+8+20+0)
+            self.pipe.send((srcip, srcport, dstip, dstport, err, data))
+
+errordispatcher = ErrorDispatcher()
+
 
 if __name__ == '__main__':
     import snl
