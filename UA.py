@@ -223,12 +223,16 @@ class SessionMixin:
                 log.info("%s invitation ok", self)
                 dialog = Dialog.Dialog(invite, result.success)
                 self.addsession(dialog, media)
-
-                if not media.setremoteoffer(result.success.body):
-                    log.info("%s incompatible codecs -> bying", self)
+                try:
+                    if not media.setremoteoffer(result.success.body):
+                        log.info("%s incompatible codecs -> bying", self)
+                        self.bye(dialog)
+                        return
+                    return dialog
+                except Exception as exc:
+                    log.info("%s %s -> bying", self, exc)
                     self.bye(dialog)
                     return
-                return dialog
 
             elif result.error:
                 log.info("%s invitation failed: %s %s", self, result.error.code, result.error.reason)
@@ -249,10 +253,14 @@ class SessionMixin:
             if len(self.sessions) > 3:
                 log.info("%s busy -> rejecting", self)
                 return invite.response(481)
-            media = Media.Media(self, **self.mediaargs)
-            if not media.setremoteoffer(invite.body):
-                log.info("%s incompatible codecs -> rejecting", self)
-                return invite.response(488)
+            try:
+                media = Media.Media(self, **self.mediaargs)
+                if not media.setremoteoffer(invite.body):
+                    log.info("%s incompatible codecs -> rejecting", self)
+                    return invite.response(488)
+            except Exception as exc:
+                log.info("%s %s -> rejecting", self, exc)
+                return invite.response(500)
             log.info("%s accept invitation", self)
             response = invite.response(200, 'Contact: {}'.format(self.contacturi))
             response.setbody(*media.getlocaloffer())
