@@ -329,7 +329,7 @@ class URI:
         self.port = res.get('port')
         params = res.get('params')
         if params:
-            ks = params[0::2]; vs = params[1::2]
+            ks = list(params)[0::2]; vs = list(params)[1::2]
             self.params = ParameterDict(zip(ks,vs))
         else:
             self.params = ParameterDict()

@@ -161,9 +161,9 @@ class Transaction:
         self.lastrequest = self.lastresponse = None
         self.events = []
         self.eventsemaphore = threading.Semaphore(0)
+        log.info("%s <-- New transaction", self)
         with self.lock:
             self.init()
-        log.info("%s <-- New transaction", self)
 
     def __str__(self):
         return "{}-{}".format("/".join(self.id), self.state)
@@ -312,9 +312,9 @@ class ServerTransaction(Transaction):
 #
 #                 Figure 5: INVITE client transaction
 class INVITEclientTransaction(ClientTransaction):
+    state = 'Calling'
     def init(self):
         self.transport.send(self.request, self.addr)
-        self.state = 'Calling'
         self.Aduration = self.T1
         self.armtimer('A', self.Aduration)
         self.armtimer('B', 64*self.T1)
@@ -384,9 +384,9 @@ class INVITEclientTransaction(ClientTransaction):
 #                         |           |
 #                         +-----------+
 class ACKclientTransaction(ClientTransaction):
+    state = 'Proceeding'
     def init(self):
         self.transport.send(self.request, self.addr)
-        self.state = 'Proceeding'
         self.armtimer('B', 64*self.T1)
 
     def Proceeding_TimerB(self):
@@ -439,9 +439,9 @@ class ACKclientTransaction(ClientTransaction):
 #
 #                 Figure 6: non-INVITE client transaction
 class NonINVITEclientTransaction(ClientTransaction):
+    state = 'Trying'
     def init(self):
         self.transport.send(self.request, self.addr)
-        self.state = 'Trying'
         self.Eduration = self.T1
         self.armtimer('E', self.Eduration)
         self.armtimer('F', 64*self.T1)
@@ -533,9 +533,9 @@ class NonINVITEclientTransaction(ClientTransaction):
 #
 #              Figure 7: INVITE server transaction
 class INVITEserverTransaction(ServerTransaction):
+    state = 'Proceeding'
     def init(self):
         self.lastresponse = self.request.response(100)
-        self.state = 'Proceeding'
         self.transport.send(self.lastresponse)
 
     def Proceeding_Request(self):
@@ -608,8 +608,8 @@ class ACKserverTransaction(ServerTransaction):
         super().__init__(*args, **kwargs)
         self.lastresponse = response2xx
 
+    state = 'Completed'
     def init(self):
-        self.state = 'Completed'
         self.Gduration = self.T1
         self.armtimer('G', self.Gduration)
         self.armtimer('H', 64*self.T1)
@@ -672,8 +672,9 @@ class ACKserverTransaction(ServerTransaction):
 #
 #                Figure 8: non-INVITE server transaction
 class NonINVITEserverTransaction(ServerTransaction):
+    state = 'Trying'
     def init(self):
-        self.state = 'Trying'
+        pass
 
     def Trying_1xx(self):
         self.state = "Proceeding"

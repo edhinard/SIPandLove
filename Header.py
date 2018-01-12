@@ -265,16 +265,20 @@ class Header(metaclass=HeaderMeta):
         # Unfold the value (replace (blanks) + \r\n + blank(s) with SPACE)
         #
         value = Header.UNFOLDING_RE.sub(' ', value)
-                
-        #
+
         # Parse the value according to the name of the header
-        #  raise SIPBNF.ParseException
+        #  for unknown header value is kept as is (unparsed)
+        #  special value starting with a # avoid parsing also
+        #  can raise a SIPBNF.ParseException
         cls = Header.SIPheaderclasses.get(name.lower())
+        if value.startswith('#'):
+            cls = None
+            value = value[1:]
         if cls:
             try:
                 if cls._multiple:
                     argsgenerator = cls._parse(value)
-                    headers = ([cls(name, **args) for args in argsgenerator])
+                    headers = [cls(name, **args) for args in argsgenerator]
                 else:
                     args = cls._parse(value)
                     headers = [cls(name, **args)]

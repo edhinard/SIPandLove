@@ -98,6 +98,7 @@ class AuthenticationMixin:
                         return
                     message.addheaders(auth.header, replace=True)
                     message.newbranch()
+                    message.seq = message.seq + 1
                     yield from UAbase.sendmessage(self, message)
                     return
             else:
@@ -106,42 +107,38 @@ class AuthenticationMixin:
 
 class RegistrationMixin:
     def mixininit(self, **kwargs):
-        self.registered = False
+        self.registermessage = None
         self.regtimer = None
-        self.regcallid = None
-        self.regseq = None
         return kwargs
 
-    def register(self, expires=3600, async=False):
+    def register(self, expires=3600, *headers, async=False):
         if not async:
-            return self._register(expires)
-        threading.Thread(target=self._register, args=(expires,), daemon=True).start()
+            return self._register(expires, *headers)
+        threading.Thread(target=self._register, args=(expires,*headers), daemon=True).start()
 
-    def _register(self, expires=3600):
+    def _register(self, expires=3600, *headers):
         Timer.unarm(self.regtimer)
 
         if expires > 0:
-            log.info("%s %s for %ds", self, 're-registering' if self.registered else 'registering', expires)
+            log.info("%s %s for %ds", self, 're-registering' if self.register else 'registering', expires)
         else:
             log.info("%s unregistering", self)
 
-        register = Message.REGISTER(
-            self.domain,
-            'From: {}'.format(self.addressofrecord),
-            'To: {}'.format(self.addressofrecord),
-            'Contact: {}'.format(self.contacturi),
-            'Expires: {}'.format(expires)
-        )
-        register.enforceheaders()
-        if self.regcallid:
-            register.callid = self.regcallid
-            self.regseq += 1
-            register.seq = self.regseq
+        if self.registermessage is None:
+            self.registermessage = Message.REGISTER(self.domain, *headers)
+            self.registermessage.addheaders(
+                'From: {}'.format(self.addressofrecord),
+                'To: {}'.format(self.addressofrecord),
+                'Contact: {}'.format(self.contacturi),
+                'Expires: {}'.format(expires),
+                ifmissing=True
+            )
+            self.registermessage.enforceheaders()
         else:
-            self.regcallid = register.callid
-            self.regseq = register.seq
-
-        for result in self.sendmessage(register):
+            self.registermessage.seq = self.registermessage.seq + 1
+            self.registermessage.newbranch()
+        self.registermessage.addheaders('Expires: {}'.format(expires), replace=True)
+        for result in self.sendmessage(self.registermessage):
             if result.success:
                 expiresheader = result.success.getheader('Expires')
                 if expiresheader:
@@ -150,33 +147,30 @@ class RegistrationMixin:
                 if contactheader:
                     gotexpires = contactheader.params.get('expires')
                 if gotexpires > 0:
-                    self.registered = True
                     log.info("%s registered for %ds", self, gotexpires)
-                    Timer.arm(duration=gotexpires//2, cb=self.register, expires=expires, async=True)
+                    self.regtimer = Timer.arm(gotexpires//2, self.register, expires, async=True)
                 else:
-                    self.registered = False
+                    self.registermessage = None
                     log.info("%s unregistered", self)
-                return self.registered
+                return self.registermessage is not None
 
             elif result.error:
                 if result.error.code == 423:
                     minexpires = result.error.getheader('Min-Expires')
                     log.info("%s registering failed: %s %s, %r", self, result.error.code, result.error.reason, minexpires)
                     if minexpires:
-                        return self.register(minexpires.delta)
-                    else:
-                        return self.registered
-
-                else:
-                    log.info("%s registering failed: %s %s", self, result.error.code, result.error.reason)
-                    return self.registered
+                        return self.register(minexpires.delta, *headers)
+                self.registermessage = None
+                log.info("%s registering failed: %s %s", self, result.error.code, result.error.reason)
+                return False
 
             elif result.provisional:
                 pass
 
             elif result.exception:
+                self.registermessage = None
                 log.info("%s registering failed: %s", self, result.exception)
-                return self.registered
+                return False
 
 
 class SessionMixin:
