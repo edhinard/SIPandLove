@@ -317,8 +317,6 @@ class URI:
     def __init__(self, value):
         if isinstance(value, str):
             res = Parser('Request-URI', Request_URI).parse(value)
-        elif isinstance(value, URI):
-            res = value.__dict__
         else:
             res = value
 

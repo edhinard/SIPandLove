@@ -297,7 +297,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
     def __init__(self, uri, *headers, body=None, method=None, **kw):
         log.debug("New request: method={} uri={}".format(method, uri))
         SIPMessage.__init__(self, *headers, body=body)
-        self.uri = SIPBNF.URI(uri)
+        self.uri = uri if isinstance(uri, SIPBNF.URI) else SIPBNF.URI(uri)
         if method is not None:
             self.method = method
             self.METHOD = method.upper()
@@ -476,7 +476,8 @@ class INVITE(SIPRequest):
     def ack(self, response):
         if response.familycode == 1:
             raise ValueError("cannot build an ACK from a 1xx response")
-        ack = ACK(self.uri, *self.getheaders('from', 'cseq', 'call-id', 'via'), response.getheader('to'))
+        uri = response.getheader('contact').address if response.familycode == 2 else self.uri
+        ack = ACK(uri, *self.getheaders('from', 'cseq', 'call-id', 'via'), response.getheader('to'))
         ack.getheader('CSeq').method = 'ACK'
         return ack
 

@@ -24,22 +24,23 @@ class Dialog:
     def __init__(self, request, response, uac=False, uas=False):
         if (uac and uas) or (not uac and not uas):
             raise ValueError("uac xor uas must be True")
+        self.callid = request.callid
         if uac:
-            self.callid       = request.callid
+            self.remotetarget = response.getheader('contact').address
+            self.localuri     = request.getheader('from').address
             self.localtag     = request.fromtag
-            self.remotetag    = response.totag
-            self.localtarget  = request.getheader('from').address
-            self.remotetarget = request.getheader('to').address
             self.localseq     = request.seq
+            self.remoteuri    = response.getheader('to').address
+            self.remotetag    = response.totag
             self.remoteseq    = None
         if uas:
-            self.callid = request.callid
-            self.localtag = response.totag
-            self.remotetag = request.fromtag
-            self.localtarget = request.getheader('to').address
-            self.remotetarget = request.getheader('from').address
-            self.localseq = random.randint(0,0x7fff)
-            self.remoteseq = request.seq
+            self.remotetarget = request.getheader('contact').address
+            self.localuri     = response.getheader('to').address
+            self.localtag     = response.totag
+            self.localseq     = random.randint(0,0x7fff)
+            self.remoteuri    = request.getheader('from').address
+            self.remotetag    = request.fromtag
+            self.remoteseq    = request.seq
     @property
     def ident(self):
         return "{}/{}/{}".format(self.callid, self.localtag, self.remotetag)

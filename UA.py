@@ -294,8 +294,8 @@ class SessionMixin:
         dialog.localseq += 1
         bye = Message.BYE(dialog.remotetarget,
                          'call-id:{}'.format(dialog.callid),
-                         'from:<{}>;tag={}'.format(dialog.localtarget, dialog.localtag),
-                         'to:<{}>;tag={}'.format(dialog.remotetarget, dialog.remotetag),
+                         'from:<{}>;tag={}'.format(dialog.localuri, dialog.localtag),
+                         'to:<{}>;tag={}'.format(dialog.remoteuri, dialog.remotetag),
                          'cseq: {} BYE'.format(dialog.localseq))
         media.stop()
         for result in self.sendmessage(bye):
