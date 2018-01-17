@@ -135,7 +135,7 @@ class RegistrationMixin:
         Timer.unarm(self.regtimer)
 
         if expires > 0:
-            log.info("%s %s for %ds", self, 're-registering' if self.register else 'registering', expires)
+            log.info("%s %s for %ds", self, 're-registering' if self.registermessage else 'registering', expires)
         else:
             log.info("%s unregistering", self)
 
@@ -319,6 +319,7 @@ class SessionMixin:
         try:
             dialog,media = self.popsession(ident)
         except:
+            log.info("%s bying unknown dialog from %s", self, bye.getheader('f').address)
             return bye.response(481)
 
         log.info("%s closed by remote", self)
