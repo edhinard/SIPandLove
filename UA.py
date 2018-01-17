@@ -80,6 +80,21 @@ class UAbase(Transaction.TransactionManager):
                 log.info("%s querying failed: %s", self, result.exception)
 
 
+class CancelationMixin:
+    def CANCEL_handler(self, cancel):
+        transaction = self.transactionmatching(cancel, matchonbranch=True)
+        if transaction:
+            log.info("%s canceled by %s", self, cancel.getheader('f').address)
+            resp = cancel.response(200)
+            totag = transaction.eventcancel()
+            if totag:
+                resp.totag = totag
+            return resp
+
+        log.info("%s invalid cancelation from %s", self, cancel.getheader('f').address)
+        return cancel.response(481)
+
+
 class AuthenticationMixin:
     def mixininit(self, credentials=None, **kwargs):
         self.credentials = credentials
@@ -215,7 +230,7 @@ class SessionMixin:
         for result in self.sendmessage(invite):
             if result.success:
                 log.info("%s invitation ok", self)
-                dialog = Dialog.Dialog(invite, result.success)
+                dialog = Dialog.Dialog(invite, result.success, uac=True)
                 self.addsession(dialog, media)
                 try:
                     if not media.setremoteoffer(result.success.body):
@@ -258,7 +273,7 @@ class SessionMixin:
             log.info("%s accept invitation", self)
             response = invite.response(200, 'Contact: {}'.format(self.contacturi))
             response.setbody(*media.getlocaloffer())
-            dialog = Dialog.Dialog(response, invite)
+            dialog = Dialog.Dialog(invite, response, uas=True)
             self.addsession(dialog, media)
             return response
 
@@ -278,9 +293,9 @@ class SessionMixin:
         log.info("%s closing locally", self)
         dialog.localseq += 1
         bye = Message.BYE(dialog.remotetarget,
-                         'to:{};tag={}'.format(dialog.remotetarget, dialog.remotetag),
-                         'from:{};tag={}'.format(dialog.localtarget, dialog.localtag),
                          'call-id:{}'.format(dialog.callid),
+                         'from:<{}>;tag={}'.format(dialog.localtarget, dialog.localtag),
+                         'to:<{}>;tag={}'.format(dialog.remotetarget, dialog.remotetag),
                          'cseq: {} BYE'.format(dialog.localseq))
         media.stop()
         for result in self.sendmessage(bye):
@@ -310,7 +325,7 @@ class SessionMixin:
         media.stop()
         return bye.response(200)
 
-class SIPPhone(SessionMixin, RegistrationMixin, AuthenticationMixin, UAbase):
+class SIPPhone(SessionMixin, RegistrationMixin, AuthenticationMixin, CancelationMixin, UAbase):
     pass
 
     

@@ -64,10 +64,15 @@ class TransactionManager(threading.Thread):
             self.transactions.append(transaction)
         return transaction
 
-    def transactionmatching(self, message):
+    def transactionmatching(self, message, matchonbranch=False):
         with self.lock:
             for transaction in self.transactions:
-                if transaction.id == transaction.identifier(message):
+                # "normal" match algorithm
+                if not matchonbranch and (transaction.id == transaction.identifier(message)):
+                    return transaction
+
+                # used to find a transaction to CANCEL
+                if matchonbranch and (transaction.request.branch == message.branch):
                     return transaction
 
     def run(self):
@@ -202,26 +207,20 @@ class Transaction:
                 if informTU:
                     self.events.append(message)
                     self.eventsemaphore.release()
-                if self.state != state:
-                    log.info(self)
-                    if self.state == 'Terminated':
-                        self.events.append(None)
-                        self.eventsemaphore.release()
+                self.checkstate(state)
 
     def eventerror(self, err):
         with self.lock:
             eventcb = getattr(self, '{}_Error'.format(self.state), None)
             if eventcb:
+                state = self.state
                 error = TransportError(err)
                 log.info("%s <-- %s", self, error)
                 informTU = eventcb()
                 if informTU:
                     self.events.append(error)
                     self.eventsemaphore.release()
-                log.info(self)
-                if self.state == 'Terminated':
-                    self.events.append(None)
-                    self.eventsemaphore.release()
+                self.checkstate(state)
 
     def eventtimer(self, name, state):
         with self.lock:
@@ -233,11 +232,24 @@ class Transaction:
                     if informTU:
                         self.events.append(Timeout(name))
                         self.eventsemaphore.release()
-                    if self.state != state:
-                        log.info(self)
-                        if self.state == 'Terminated':
-                            self.events.append(None)
-                            self.eventsemaphore.release()
+                    self.checkstate(state)
+
+    def eventcancel(self):
+        with self.lock:
+            eventcb = getattr(self, '{}_Cancel'.format(self.state), None)
+            if eventcb:
+                state = self.state
+                log.info("%s <-- Cancel", self)
+                eventcb()
+                self.checkstate(state)
+                return self.lastresponse.totag
+
+    def checkstate(self, previous):
+        if self.state != previous:
+            log.info(self)
+            if self.state == 'Terminated':
+                self.events.append(None)
+                self.eventsemaphore.release()
 
 class ClientTransaction(Transaction):
     @staticmethod
@@ -562,6 +574,11 @@ class INVITEserverTransaction(ServerTransaction):
     def Proceeding_Error(self):
         self.state = 'Terminated'
         return True
+
+    def Proceeding_Cancel(self):
+        self.lastresponse = self.request.response(487)
+        self.transport.send(self.lastresponse)
+        self.state = 'Completed'
 
     Completed_Request = Proceeding_Request
 

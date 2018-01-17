@@ -20,7 +20,7 @@ class ColoredFormatter(logging.Formatter):
         record.getMessage = types.MethodType(getIndentedMessage, record)
         return logging.Formatter.format(self, record)
 
-loghandler = logging.StreamHandler()
+loghandler = logging.StreamHandler(sys.stdout)
 logformatter = ColoredFormatter()
 logformatter.default_time_format = "%H:%M:%S"
 loghandler.setFormatter(logformatter)

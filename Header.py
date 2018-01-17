@@ -473,6 +473,7 @@ if __name__ == '__main__':
         'From: "bbbbb cccc èèè \u1234\u5678\u9abc" <sip:+33960700014@sip.osk.com:1;lr>;tag=dd;toto',
         'From: <sip:+33960700014@sip.osk.com>',
         'From: <sip:+33960700014@sip.osk.com>;tag=QNUPkiWuoMCQvYGw6VvQX9tzF-.1Oa5w',
+        'From: <sip:0960700011@sip.osk.com;user=phone;noa=national;srvattri=national>;tag=4lQ1i4QM',
 
         'v: SIP/2.0/UDP 172.20.35.253:6064;rport;branch=z9hG4bKPjHpg0F53qjaD1TynDvA.ahs2u7dszKZlz',
 
@@ -489,6 +490,7 @@ if __name__ == '__main__':
         'Contact: <sip:+33960700014@172.20.35.253:6064;ob>',
         'Contact: <sip:+33960700014@172.20.35.253:6064;ob>;expires=3600',
         'Contact: <sip:+33960700014@172.20.35.253:6064>,"coucou" <sip:+33960700014@172.20.35.253:6064;ob>,sip:+33960700014@172.20.35.253:6064;ob',
+        'Contact: <sip:172.20.56.7:5060;Dpt=ea7a-200;Hpt=8e52_16;CxtId=4;TRC=ffffffff-ffffffff>',
         'Expires: 300',
 
         'Allow: PRACK, INVITE, ACK, BYE, CANCEL, UPDATE, INFO, SUBSCRIBE, NOTIFY, REFER, MESSAGE, OPTIONS',
