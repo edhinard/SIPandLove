@@ -43,11 +43,11 @@ class DecodeInfo:
             del self.buf[:self.iend]
         headers = Header.Headers(rawheaders, strictparsing=False)
         if self.klass == SIPResponse:
-            return SIPResponse(self.code, *headers.getlist(), reason=self.reason, body=body)
+            return SIPResponse(self.code, *headers.list(), reason=self.reason, body=body)
         elif self.klass == SIPRequest:
-            return SIPRequest(self.requesturi, *headers.getlist(), body=body, method=self.method)
+            return SIPRequest(self.requesturi, *headers.list(), body=body, method=self.method)
         else:
-            return self.klass(self.requesturi, *headers.getlist(), body=body, method=self.method)
+            return self.klass(self.requesturi, *headers.list(), body=body, method=self.method)
 
 class SIPMessage(object):
     @staticmethod
@@ -146,52 +146,38 @@ class SIPMessage(object):
         if replace and ifmissing:
             raise Exception("can't add headers with both replace=True and ifmissing=True")
         if replace:
-            return self._headers.replaceoradd(*headers)
-        if ifmissing:
-            return self._headers.addifmissing(*headers)
-        return self._headers.add(*headers)
+            self._headers.replaceoradd(*headers)
+        elif ifmissing:
+            self._headers.addifmissing(*headers)
+        else:
+            self._headers.add(*headers)
 
-    def getheaders(self, *names):
-        return self._headers.getlist(*names)
+    def headers(self, *names):
+        return self._headers.list(*names)
 
-    def hasheader(self, name):
-        try:
-            dummy = self._headers.getfirst(name)
-            return True
-        except:
-            pass
-        return False
-
-    def getheader(self, name):
-        try:
-            header = self._headers.getfirst(name)
-        except:
-            return None
-        return header
-
-    def removeheader(self, name):
-        self._headers.remove(name)
+    def header(self, name):
+        return self._headers.first(name)
 
     def popheader(self, name):
-        return self._headers.popfirst(name)
+        return self._headers.pop(name)
 
     def _getlength(self):
-        cl = self.getheader('Content-Length')
+        cl = self.header('Content-Length')
         if cl:
             return cl.length
     def _setlength(self, length):
-        cl = self.getheader('Content-Length')
+        cl = self.header('Content-Length')
         if not cl:
             raise Exception("missing Content-Length header")
         cl.length = length
     length = property(_getlength, _setlength)
 
     def _getbranch(self):
-        via = self.getheader('Via')
+        via = self.header('Via')
         if via:
             return via.params.get('branch')
     def _setbranch(self, branch):
-        via = self.getheader('Via')
+        via = self.header('Via')
         if not via:
             raise Exception("missing Via header")
         via.params['branch'] = branch
@@ -200,44 +186,44 @@ class SIPMessage(object):
         self.branch = 'z9hG4bK_{}'.format(tag or self.randomstr())
 
     def _getfromtag(self):
-        f = self.getheader('From')
+        f = self.header('From')
         if f:
             return f.params.get('tag')
     def _setfromtag(self, tag):
-        f = self.getheader('From')
+        f = self.header('From')
         if not f:
             raise Exception("missing From header")
         f.params['tag'] = tag
     fromtag = property(_getfromtag, _setfromtag)
 
     def _gettotag(self):
-        t = self.getheader('To')
+        t = self.header('To')
         if t:
             return t.params.get('tag')
     def _settotag(self, tag):
-        t = self.getheader('To')
+        t = self.header('To')
         if not t:
             raise Exception("missing To header")
         t.params['tag'] = tag
     totag = property(_gettotag, _settotag)
 
     def _getcallid(self):
-        c = self.getheader('Call-Id')
+        c = self.header('Call-Id')
         if c:
             return c.callid
     def _setcallid(self, cid):
-        c = self.getheader('Call-Id')
+        c = self.header('Call-Id')
         if not c:
             raise Exception("missing Call-Id header")
         c.callid = cid
     callid = property(_getcallid, _setcallid)
 
     def _getseq(self):
-        c = self.getheader('CSeq')
+        c = self.header('CSeq')
         if c:
             return c.seq
     def _setseq(self, seq):
-        c = self.getheader('CSeq')
+        c = self.header('CSeq')
         if not c:
             raise Exception("missing Cseq header")
         c.seq = seq
@@ -245,13 +231,13 @@ class SIPMessage(object):
 
     @property
     def CseqMETHOD(self):
-        c = self.getheader('CSeq')
+        c = self.header('CSeq')
         if c:
             return c.method.upper()
 
     def tobytes(self, headerform='nominal'):
         ret = [self.startline(), b'\r\n']
-        for header in self.getheaders():
+        for header in self.headers():
             ret.append(header.tobytes(headerform))
             ret.append(b'\r\n')
         ret.append(b'\r\n')
@@ -263,7 +249,7 @@ class SIPMessage(object):
             return self.tobytes().decode('utf-8')
         except:
             ret = [self.startline(), b'\r\n']
-            for header in self.getheaders():
+            for header in self.headers():
                 ret.append(header.tobytes())
                 ret.append(b'\r\n')
             ret.append(b'\r\n')
@@ -341,7 +327,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
     def authenticationheader(self, response, nc=1, cnonce=None, **kwargs):
         Auth = collections.namedtuple('Auth', 'header extra error')
         Auth.__new__.__defaults__ = ({}, None)
-        authenticates = list(response.getheaders('WWW-Authenticate', 'Proxy-Authenticate'))
+        authenticates = response.headers('WWW-Authenticate', 'Proxy-Authenticate')
         if not authenticates:
             return Auth(header=None, error="missing WWW|Proxy-Authenticate header in response")
 
@@ -459,7 +445,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
 
     def response(self, code, *headers, body=None, reason=None, **kw):
         resp = SIPResponse(code,
-                           *self.getheaders('via', 'from', 'to', 'call-id', 'cseq'),
+                           *self.headers('via', 'from', 'to', 'call-id', 'cseq'),
                            *headers,
                            body=body,
                            reason=reason,
@@ -476,9 +462,9 @@ class INVITE(SIPRequest):
     def ack(self, response):
         if response.familycode == 1:
             raise ValueError("cannot build an ACK from a 1xx response")
-        uri = response.getheader('contact').address if response.familycode == 2 else self.uri
-        ack = ACK(uri, *self.getheaders('from', 'cseq', 'call-id', 'via'), response.getheader('to'))
-        ack.getheader('CSeq').method = 'ACK'
+        uri = response.header('contact').address if response.familycode == 2 else self.uri
+        ack = ACK(uri, *self.headers('from', 'cseq', 'call-id', 'via'), response.header('to'))
+        ack.header('CSeq').method = 'ACK'
         return ack
 
 class ACK(SIPRequest):
@@ -542,6 +528,7 @@ Route: <sip:193.252.231.243:5060;lr>\r
 Content-Length: 0\r
 \r
 ''')
+    log.info("\n%s", register)
     resp = SIPMessage.frombytes(b'''SIP/2.0 401 Unauthorized - Challenging the UE\r
 From: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=1dd771f8\r
 To: <sip:alice@ims.mnc001.mcc208.3gppnetwork.org>;tag=faeec13323cf344e1125761a979ec21b-6877\r
@@ -558,6 +545,7 @@ WWW-Authenticate: Digest realm="ims.mnc001.mcc208.3gppnetwork.org", nonce="KBdnI
 Security-Server: ipsec-3gpp; ealg=null; alg=hmac-md5-96; spi-c=5008; spi-s=5009; port-c=34432; port-s=37529; prot=esp; mod=trans; q=0.1\r
 \r
 ''')
+    log.info("\n%s", resp)
     auth = Header.Header.parse(b'''Authorization: Digest username="alice@ims.mnc001.mcc208.3gppnetwork.org",realm="ims.mnc001.mcc208.3gppnetwork.org",nonce="KBdnIyppR5T1v4wsr0DCIKvGvtjeMAAAAbJwt4v710I=",algorithm=AKAv1-MD5,uri="sip:ims.mnc001.mcc208.3gppnetwork.org",response="079d8ec52db706b0d3fa80a2e4003156",qop=auth,nc=00000001,cnonce="bcffc432c12c64e0"''')[0]
 
     test = register.authenticationheader(resp,

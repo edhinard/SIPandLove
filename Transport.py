@@ -82,7 +82,7 @@ class Transport(multiprocessing.Process):
         else:
             raise Exception("expecting a 2uple or a string for addr, got {!r}".format(addr))
 
-        via = message.getheader('via')
+        via = message.header('via')
         if isinstance(message, Message.SIPRequest):
             if ip is None:
                 raise Exception("missing address")
@@ -115,7 +115,7 @@ class Transport(multiprocessing.Process):
                 else:
                     port = via.params.get('rport', via.port) or 5060
 
-        if (protocol == 'TCP' or len(message.body)) and not message.getheader('l'):
+        if (protocol == 'TCP' or len(message.body)) and not message.header('l'):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
         log.info("%s --%s-> %s:%d\n%s", self, protocol, ip, port, message)
@@ -127,7 +127,7 @@ class Transport(multiprocessing.Process):
             message = Message.SIPMessage.frombytes(message)
             if message:
                 if isinstance(message, Message.SIPRequest):
-                    via = message.getheader('via')
+                    via = message.header('via')
                     if via:
                         if via.host != ip:
                             via.params['received'] = ip

@@ -84,14 +84,14 @@ class CancelationMixin:
     def CANCEL_handler(self, cancel):
         transaction = self.transactionmatching(cancel, matchonbranch=True)
         if transaction:
-            log.info("%s canceled by %s", self, cancel.getheader('f').address)
+            log.info("%s canceled by %s", self, cancel.header('f').address)
             resp = cancel.response(200)
             totag = transaction.eventcancel()
             if totag:
                 resp.totag = totag
             return resp
 
-        log.info("%s invalid cancelation from %s", self, cancel.getheader('f').address)
+        log.info("%s invalid cancelation from %s", self, cancel.header('f').address)
         return cancel.response(481)
 
 
@@ -155,10 +155,10 @@ class RegistrationMixin:
         self.registermessage.addheaders('Expires: {}'.format(expires), replace=True)
         for result in self.sendmessage(self.registermessage):
             if result.success:
-                expiresheader = result.success.getheader('Expires')
+                expiresheader = result.success.header('Expires')
                 if expiresheader:
                     gotexpires = expiresheader.delta
-                contactheader = result.success.getheader('Contact')
+                contactheader = result.success.header('Contact')
                 if contactheader:
                     gotexpires = contactheader.params.get('expires')
                 if gotexpires > 0:
@@ -171,7 +171,7 @@ class RegistrationMixin:
 
             elif result.error:
                 if result.error.code == 423:
-                    minexpires = result.error.getheader('Min-Expires')
+                    minexpires = result.error.header('Min-Expires')
                     log.info("%s registering failed: %s %s, %r", self, result.error.code, result.error.reason, minexpires)
                     if minexpires:
                         return self.register(minexpires.delta, *headers)
@@ -258,7 +258,7 @@ class SessionMixin:
         ident = Dialog.UASid(invite)
         if not ident:
             # out of dialog invitation
-            log.info("%s invited by %s", self, invite.getheader('f').address)
+            log.info("%s invited by %s", self, invite.header('f').address)
             if len(self.sessions) > 3:
                 log.info("%s busy -> rejecting", self)
                 return invite.response(481)
@@ -280,7 +280,7 @@ class SessionMixin:
         try:
             dialog,media = self.getsession(ident)
         except:
-            log.info("%s invalid invitation by %s", self, invite.getheader('f').address)
+            log.info("%s invalid invitation by %s", self, invite.header('f').address)
             return invite.response(481)
 
     def bye(self, key):
@@ -319,7 +319,7 @@ class SessionMixin:
         try:
             dialog,media = self.popsession(ident)
         except:
-            log.info("%s bying unknown dialog from %s", self, bye.getheader('f').address)
+            log.info("%s bying unknown dialog from %s", self, bye.header('f').address)
             return bye.response(481)
 
         log.info("%s closed by remote", self)

@@ -257,7 +257,7 @@ class ClientTransaction(Transaction):
         if isinstance(message, Message.SIPRequest):
             method = message.METHOD
         else:
-            cseq = message.getheader('CSeq')
+            cseq = message.header('CSeq')
             if cseq:
                 method = cseq.method.upper()
             else:
@@ -269,7 +269,7 @@ class ServerTransaction(Transaction):
     def identifier(request):
         if isinstance(request, Message.SIPResponse):
             return
-        via = request.getheader('Via')
+        via = request.header('Via')
         if via:
             if via.port:
                 sentby = "{}:{}".format(via.host, via.port)

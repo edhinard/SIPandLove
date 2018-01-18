@@ -26,19 +26,19 @@ class Dialog:
             raise ValueError("uac xor uas must be True")
         self.callid = request.callid
         if uac:
-            self.remotetarget = response.getheader('contact').address
-            self.localuri     = request.getheader('from').address
+            self.remotetarget = response.header('contact').address
+            self.localuri     = request.header('from').address
             self.localtag     = request.fromtag
             self.localseq     = request.seq
-            self.remoteuri    = response.getheader('to').address
+            self.remoteuri    = response.header('to').address
             self.remotetag    = response.totag
             self.remoteseq    = None
         if uas:
-            self.remotetarget = request.getheader('contact').address
-            self.localuri     = response.getheader('to').address
+            self.remotetarget = request.header('contact').address
+            self.localuri     = response.header('to').address
             self.localtag     = response.totag
             self.localseq     = random.randint(0,0x7fff)
-            self.remoteuri    = request.getheader('from').address
+            self.remoteuri    = request.header('from').address
             self.remotetag    = request.fromtag
             self.remoteseq    = request.seq
     @property

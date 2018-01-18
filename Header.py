@@ -3,6 +3,7 @@
 import re
 import copy
 import logging
+import itertools
 log = logging.getLogger('Header')
 
 from . import SIPBNF
@@ -12,46 +13,34 @@ from . import SIPBNF
 # Ordered collection of headers in a SIP message
 class Headers:
     HEADERSEP_RE = re.compile(b'\r\n(?![ \t])')
+    firstnames = ['via', 'route', 'from', 'to', 'contact', 'expires', 'call-id', 'cseq', 'max-forward']
+    lastnames = ['allow', 'content-type', 'content-length']
     
     def __init__(self, *headers, strictparsing=True):
-        self._headers = []
+        self._headers = {}
         self.add(*headers, strictparsing=strictparsing)
         
     def add(self, *headers, strictparsing=True):
         headers = Headers.parse(*headers, strictparsing=strictparsing)
-        self._headers.extend(headers)
-        return headers
+        for header in headers:
+            self._headers.setdefault(header._indexname, []).append(header)
 
     def addifmissing(self, *headers, strictparsing=True):
         headers = Headers.parse(*headers, strictparsing=strictparsing)
         for header in headers:
-            name = header._indexname
-            try:
-                dummy = self.nindex(name, 1)
-            except:
-                self._headers.append(header)
-        return headers
+            l = self._headers.setdefault(header._indexname, [])
+            if len(l) == 0:
+                l.append(header)
 
     def replaceoradd(self, *headers, strictparsing=True):
         headers = Headers.parse(*headers, strictparsing=strictparsing)
-        replaced = {}
+        replaced = set()
         for header in headers:
-            name = header._indexname
-            num = replaced.setdefault(name, 1)
-            try:
-                index = self.nindex(name, num)
-            except:
-                try:
-                    index = self.nindex(name, num-1)
-                except:
-                    self._headers.append(header)
-                else:
-                    self._headers.insert(index+1, header)
-                replaced[name] += 1
-            else:
-                self._headers[index] = header
-                replaced[name] += 1
-        return headers
+            index = header._indexname
+            if not index in replaced:
+                self._headers[index] = []
+                replaced.add(index)
+            self._headers[index].append(header)
 
     @staticmethod
     def parse(*headers, strictparsing):
@@ -93,77 +82,31 @@ class Headers:
                         log.warning(error)
         return newheaders
 
-    def getlist(self, *names):
-        for index in self.indices(*names):
-            yield self._headers[index]
-    def getfirst(self, name):
-        return self._headers[self.firstindex(name)]
-
-#    def poplist(self, *names):
-#        shift = 0
-#        for index in self.indices(*names):
-#            yield self._headers.pop(index-shift)
-#            shift += 1
-    def remove(self, name):
-        try:
-            while True:
-                self.popfirst(name)
-        except:
-            pass
-    def popfirst(self, name):
-        return self._headers.pop(self.firstindex(name))
-
-    def indices(self, *names):
+    def list(self, *names):
         if not names:
-            yield from range(len(self._headers))
-            return
-        lookup = []
-        once = []
-        for name in names:
-            firstonly = False
-            if name.startswith('_'):
-                firstonly = True
-                name = name[1:]
-            name = name.lower()
-            if name in Header.SIPAliases:
-                name = Header.SIPAliases[name]
-            if not name in lookup:
-                lookup.append(name)
-                if firstonly:
-                    once.append(name)
-        for i,name in enumerate((header._indexname for header in self._headers)):
-            if name in lookup:
-                yield i
-                if name in once:
-                    lookup.remove(name)
-    def firstindex(self, name):
-        return self.nindex(name, 1)
-    def nindex(self, name, n):
-        if n < 1:
-            raise IndexError("expecting strictly positive number")
-        try:
-            indices = self.indices(name)
-            index = next(indices)
-        except StopIteration:
-            raise Exception("No header with that name {!r}".format(name))
-        for i in range(1,n):
-            try:
-                index = next(indices)
-            except StopIteration:
-                raise Exception("Only {} header(s) with that name {!r}.".format(i, name))
-        return index
+            names = list(self._headers.keys())
+        else:
+            names = [Header.index(name) for name in names if Header.index(name) in self._headers.keys()]
+        firstnames = [Header.index(name) for name in Headers.firstnames if Header.index(name) in names]
+        lastnames = [Header.index(name) for name in Headers.lastnames if Header.index(name) in names]
+        return list(itertools.chain(*itertools.chain([self._headers[name] for name in firstnames]),
+                                    *itertools.chain([self._headers[name] for name in names if name not in firstnames and name not in lastnames]),
+                                    *itertools.chain([self._headers[name] for name in lastnames])))
+
+    def first(self, name):
+        return self._headers.get(Header.index(name), [None])[0]
+
+    def pop(self, name):
+        index = Header.index(name)
+        l = self._headers.get(index)
+        if l is None:
+            return None
+        if len(l) == 1:
+            del self._headers[index]
+        return l.pop(0)
  
     def tobytes(self, headerform='nominal'):
         return b'\r\n'.join([header.tobytes(headerform) for header in self._headers] + [b''])
-    
-    def __iter__(self):
-        return iter(self._headers)
-    def __contains__(self, name):
-        name = name.lower()
-        for header in self._headers:
-            if header._indexname == name:
-                return True
-        return False
 
 #
 # Metaclass that automatically adds the attributes
@@ -219,6 +162,11 @@ class Byteheader():
 class Header(metaclass=HeaderMeta):
     SIPheaderclasses = {}
     SIPAliases = {}
+
+    @staticmethod
+    def index(name):
+        name = name.lower()
+        return Header.SIPAliases.get(name, name)
     
     def __init__(self, name=None, **kwargs):
         if not getattr(self, '_name', False):
