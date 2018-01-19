@@ -172,7 +172,7 @@ class Header(metaclass=HeaderMeta):
         if not getattr(self, '_name', False):
             assert name
             self._name = name
-            self._indexname = name.lower()
+            self._indexname = Header.index(name)
         self._originalname = name or self._name
         if getattr(self, '_args', False):
             if not set(self._args) == set(kwargs.keys()):
@@ -182,46 +182,52 @@ class Header(metaclass=HeaderMeta):
         self.__dict__.update(kwargs)
         log.debug("New header {}".format(self))
 
-    HEADER_RE = re.compile('^([a-zA-Z-.!%*_+`\'~]+)[ \t]*:(.*)$', flags=re.DOTALL)
-    UNFOLDING_RE = re.compile('[ \t]*\r\n[ \t]+')
+    HEADER_RE = re.compile(b'^([a-zA-Z-.!%*_+`\'~]+)[ \t]*:(.*)$', flags=re.DOTALL)
+    UNFOLDING_RE = re.compile(b'[ \t]*\r\n[ \t]+')
     @staticmethod
     def parse(rawheader):
+        #
+        # A line starting with a # becomes an unparsed Byte Header
+        #
         if rawheader[0] == b'#'[0]:
             log.debug("{!r} --> Byteheader".format(rawheader))
             return [Byteheader(rawheader[1:])]
 
         #
-        # Check that header content is a valid UTF-8 string
-        #  raise UnicodeError
-        try:
-            headerstring = rawheader.decode('utf-8')
-        except:
-            log.warning("Parsing error on {!r}: not an UTF-8 string".format(rawheader))
-            raise
-
-        #
         # Parse the header: "^ name [WSP] HCOLON value $"
         #
         try:
-            name,value = Header.HEADER_RE.match(headerstring).groups()
+            name,value = Header.HEADER_RE.match(rawheader).groups()
             value = value.strip()
         except:
-            log.warning("Parsing error on {!r}: does not match 'name HCOLON value'".format(rawheader))
-            raise Exception("Expecting: header-name HCOLON header-value. Got {!r}".format(headerstring))
+            log.warning("Parsing error on {}: does not match 'name HCOLON value'".format(rawheader))
+            raise Exception("Expecting: header-name HCOLON header-value. Got {}".format(rawheader))
+        name = name.decode('utf-8')
 
         #
         # Unfold the value (replace (blanks) + \r\n + blank(s) with SPACE)
         #
-        value = Header.UNFOLDING_RE.sub(' ', value)
-
-        # Parse the value according to the name of the header
-        #  for unknown header value is kept as is (unparsed)
-        #  special value starting with a # avoid parsing also
-        #  can raise a SIPBNF.ParseException
-        cls = Header.SIPheaderclasses.get(name.lower())
-        if value.startswith('#'):
+        value = Header.UNFOLDING_RE.sub(b' ', value)
+        if value[0] == b'#'[0]:
+            #
+            # A value strating with a # is not parse
+            #
             cls = None
             value = value[1:]
+        else:
+            #
+            # Check that header value is a valid UTF-8 string
+            #  and find header type according to the name
+            try:
+                value = value.decode('utf-8')
+            except:
+                log.warning("Parsing error on {!r}: not an UTF-8 string".format(value))
+                raise
+            cls = Header.SIPheaderclasses.get(name.lower())
+
+        #
+        # Parse the header
+        #
         if cls:
             try:
                 if cls._multiple:
@@ -239,7 +245,13 @@ class Header(metaclass=HeaderMeta):
         return headers
         
     def __str__(self):
-        return self.tobytes().decode('utf-8')
+        try:
+            str = self.tobytes().decode('utf-8')
+            if not '\x00' in str:
+                return str
+        except:
+            pass
+        return "{}: {}".format(self._name, repr(self._display())[2:-1])
     def __repr__(self):
         args = ("{}={!r}".format(k,getattr(self,k)) for k in self._args)
         return '{}({})'.format(self._name, ", ".join(args))
@@ -248,14 +260,18 @@ class Header(metaclass=HeaderMeta):
         return self.value
     def tobytes(self, headerform='nominal'):
         if headerform == 'nominal':
-            key = self._name
+            name = self._name
         elif headerform == 'short':
-            key = self._alias or self._name
+            name = self._alias or self._name
         elif headerform == 'original':
-            key = self._originalname
+            name = self._originalname
         else:
             raise ValueError("unknown headerform {!r}".format(headerform))
-        return "{}: {}".format(key, self._display()).encode('utf-8')
+        name = name.encode('utf-8')
+        value = self._display()
+        if isinstance(value, str):
+            value = value.encode('utf-8')
+        return b'%s: %s' % (name, value)
 
 
 #class Accept(Header):
