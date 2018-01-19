@@ -547,8 +547,12 @@ class NonINVITEclientTransaction(ClientTransaction):
 class INVITEserverTransaction(ServerTransaction):
     state = 'Proceeding'
     def init(self):
-        self.lastresponse = self.request.response(100)
-        self.transport.send(self.lastresponse)
+        self.armtimer('TryingDelay', 0.1)
+
+    def Proceeding_TimerTryingDelay(self):
+        if not self.lastresponse:
+            self.lastresponse = self.request.response(100)
+            self.transport.send(self.lastresponse)
 
     def Proceeding_Request(self):
         if self.lastrequest.METHOD == 'INVITE':
