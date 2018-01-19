@@ -196,6 +196,17 @@ class SIPMessage(object):
         f.params['tag'] = tag
     fromtag = property(_getfromtag, _setfromtag)
 
+    def _getfromaddr(self):
+        f = self.header('From')
+        if f:
+            return f.address
+    def _setfromaddr(self, addr):
+        f = self.header('From')
+        if not f:
+            raise Exception("missing From header")
+        f.address = addr
+    fromaddr = property(_getfromaddr, _setfromaddr)
+
     def _gettotag(self):
         t = self.header('To')
         if t:
@@ -206,6 +217,28 @@ class SIPMessage(object):
             raise Exception("missing To header")
         t.params['tag'] = tag
     totag = property(_gettotag, _settotag)
+
+    def _gettoaddr(self):
+        t = self.header('To')
+        if t:
+            return t.address
+    def _settoaddr(self, addr):
+        t = self.header('To')
+        if not t:
+            raise Exception("missing To header")
+        t.address = addr
+    toaddr = property(_gettoaddr, _settoaddr)
+
+    def _getcontactaddr(self):
+        c = self.header('Contact')
+        if c:
+            return c.address
+    def _setcontactaddr(self, addr):
+        c = self.header('Contact')
+        if not c:
+            raise Exception("missing Contact header")
+        c.address = addr
+    contactaddr = property(_getcontactaddr, _setcontactaddr)
 
     def _getcallid(self):
         c = self.header('Call-Id')
@@ -462,7 +495,7 @@ class INVITE(SIPRequest):
     def ack(self, response):
         if response.familycode == 1:
             raise ValueError("cannot build an ACK from a 1xx response")
-        uri = response.header('contact').address if response.familycode == 2 else self.uri
+        uri = response.contactaddr if response.familycode == 2 else self.uri
         ack = ACK(uri, *self.headers('from', 'cseq', 'call-id', 'via'), response.header('to'))
         ack.header('CSeq').method = 'ACK'
         return ack

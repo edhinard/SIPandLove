@@ -84,14 +84,14 @@ class CancelationMixin:
     def CANCEL_handler(self, cancel):
         transaction = self.transactionmatching(cancel, matchonbranch=True)
         if transaction:
-            log.info("%s canceled by %s", self, cancel.header('f').address)
+            log.info("%s canceled by %s", self, cancel.fromaddr)
             resp = cancel.response(200)
             totag = transaction.eventcancel()
             if totag:
                 resp.totag = totag
             return resp
 
-        log.info("%s invalid cancelation from %s", self, cancel.header('f').address)
+        log.info("%s invalid cancelation from %s", self, cancel.fromaddr)
         return cancel.response(481)
 
 
@@ -258,7 +258,7 @@ class SessionMixin:
         ident = Dialog.UASid(invite)
         if not ident:
             # out of dialog invitation
-            log.info("%s invited by %s", self, invite.header('f').address)
+            log.info("%s invited by %s", self, invite.fromaddr)
             if len(self.sessions) > 3:
                 log.info("%s busy -> rejecting", self)
                 return invite.response(481)
@@ -280,7 +280,7 @@ class SessionMixin:
         try:
             dialog,media = self.getsession(ident)
         except:
-            log.info("%s invalid invitation by %s", self, invite.header('f').address)
+            log.info("%s invalid invitation by %s", self, invite.fromaddr)
             return invite.response(481)
 
     def bye(self, key):
@@ -319,7 +319,7 @@ class SessionMixin:
         try:
             dialog,media = self.popsession(ident)
         except:
-            log.info("%s bying unknown dialog from %s", self, bye.header('f').address)
+            log.info("%s bying unknown dialog from %s", self, bye.fromaddr)
             return bye.response(481)
 
         log.info("%s closed by remote", self)
