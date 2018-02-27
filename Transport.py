@@ -44,7 +44,11 @@ class Transport(multiprocessing.Process):
                 raise Exception("two conflicting values for port between {!r}:{} and localport={}".format(localiporinterface, port, localport))
             localport = port
         if not '.' in localiporinterface:
-            self.localip = get_ip_address(localiporinterface)
+            try:
+                self.localip = get_ip_address(localiporinterface)
+            except Exception as e:
+                log.error("%s %r", e, localiporinterface)
+                raise
         else:
             self.localip = localiporinterface
         self.localport = localport or 5060
