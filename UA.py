@@ -189,21 +189,22 @@ class RegistrationMixin:
 
 
 class SessionMixin:
-    def mixininit(self, mediaargs={}, **kwargs):
+    def mixininit(self, mediaclass=Media.Media, mediaargs={}, **kwargs):
+        self.mediaclass = mediaclass
         self.mediaargs = mediaargs
         self.sessions = []
         self.lock = threading.Lock()
         return kwargs
 
-    def addsession(self, dialog, media):
+    def addsession(self, session, media):
         with self.lock:
-            self.sessions.append((dialog, media))
+            self.sessions.append((session, media))
     def getsession(self, key, pop=False):
         with self.lock:
-            for i,(dialog,media) in enumerate(self.sessions):
-                if isinstance(key, str) and dialog.ident == key:
+            for i,(session,media) in enumerate(self.sessions):
+                if isinstance(key, str) and session.ident == key:
                     break
-                if isinstance(key, Dialog.Dialog) and dialog == key:
+                if isinstance(key, Dialog.Session) and session == key:
                     break
                 if isinstance(key, Media.Media) and media == key:
                     break
@@ -211,7 +212,7 @@ class SessionMixin:
                 raise KeyError("no such session {!r}".format(key))
             if pop:
                 del self.sessions[i]
-            return dialog,media
+            return session,media
     def popsession(self, key):
         return self.getsession(key, pop=True)
 
@@ -224,23 +225,23 @@ class SessionMixin:
             'Contact: {}'.format(self.contacturi),
             ifmissing=True
         )
-        media = Media.Media(self, **self.mediaargs)
+        media = self.mediaclass(ua=self, **self.mediaargs)
         invite.setbody(*media.getlocaloffer())
         log.info("%s inviting %s", self, touri)
         for result in self.sendmessage(invite):
             if result.success:
                 log.info("%s invitation ok", self)
-                dialog = Dialog.Dialog(invite, result.success, uac=True)
-                self.addsession(dialog, media)
+                session = Dialog.Session(invite, result.success, uac=True)
+                self.addsession(session, media)
                 try:
                     if not media.setremoteoffer(result.success.body):
                         log.info("%s incompatible codecs -> bying", self)
-                        self.bye(dialog)
+                        self.bye(session)
                         return
-                    return dialog
+                    return session
                 except Exception as exc:
                     log.info("%s %s -> bying", self, exc)
-                    self.bye(dialog)
+                    self.bye(session)
                     return
 
             elif result.error:
@@ -254,49 +255,55 @@ class SessionMixin:
                 log.info("%s invitation failed: %s", self, result.exception)
                 return
 
+    def askTU(self, invite):
+        return invite.response(200, 'Contact: {}'.format(self.contacturi))
+
     def INVITE_handler(self, invite):
         ident = Dialog.UASid(invite)
         if not ident:
             # out of dialog invitation
             log.info("%s invited by %s", self, invite.fromaddr)
-            if len(self.sessions) > 3:
-                log.info("%s busy -> rejecting", self)
-                return invite.response(481)
+
+            response = self.askTU(invite)
+            if response.familycode != 2:
+                log.info("%s deny invitation", self)
+                return response
+
             try:
-                media = Media.Media(self, **self.mediaargs)
+                media = self.mediaclass(ua=self, **self.mediaargs)
                 if not media.setremoteoffer(invite.body):
                     log.info("%s incompatible codecs -> rejecting", self)
                     return invite.response(488)
             except Exception as exc:
                 log.info("%s %s -> rejecting", self, exc)
                 return invite.response(500)
+
             log.info("%s accept invitation", self)
-            response = invite.response(200, 'Contact: {}'.format(self.contacturi))
             response.setbody(*media.getlocaloffer())
-            dialog = Dialog.Dialog(invite, response, uas=True)
-            self.addsession(dialog, media)
+            session = Dialog.Session(invite, response, uas=True)
+            self.addsession(session, media)
             return response
 
         try:
-            dialog,media = self.getsession(ident)
+            session,media = self.getsession(ident)
         except:
             log.info("%s invalid invitation by %s", self, invite.fromaddr)
             return invite.response(481)
 
     def bye(self, key):
         try:
-            dialog,media = self.popsession(key)
+            session,media = self.popsession(key)
         except Exception as e:
             log.warning(e)
             return
 
         log.info("%s closing locally", self)
-        dialog.localseq += 1
-        bye = Message.BYE(dialog.remotetarget,
-                         'call-id:{}'.format(dialog.callid),
-                         'from:<{}>;tag={}'.format(dialog.localuri, dialog.localtag),
-                         'to:<{}>;tag={}'.format(dialog.remoteuri, dialog.remotetag),
-                         'cseq: {} BYE'.format(dialog.localseq))
+        session.localseq += 1
+        bye = Message.BYE(session.remotetarget,
+                         'call-id:{}'.format(session.callid),
+                         'from:<{}>;tag={}'.format(session.localuri, session.localtag),
+                         'to:<{}>;tag={}'.format(session.remoteuri, session.remotetag),
+                         'cseq: {} BYE'.format(session.localseq))
         media.stop()
         for result in self.sendmessage(bye):
             if result.success:
@@ -317,9 +324,9 @@ class SessionMixin:
     def BYE_handler(self, bye):
         ident = Dialog.UASid(bye)
         try:
-            dialog,media = self.popsession(ident)
+            session,media = self.popsession(ident)
         except:
-            log.info("%s bying unknown dialog from %s", self, bye.fromaddr)
+            log.info("%s bying unknown session from %s", self, bye.fromaddr)
             return bye.response(481)
 
         log.info("%s closed by remote", self)

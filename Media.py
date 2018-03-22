@@ -35,12 +35,14 @@ class Media(threading.Thread):
         17:('DVI4/22050',  None),
         18:('G729/8000',   None)}
 
-    def __init__(self, ua, ip=None, port=None, pcapfilename=None, pcapfilter=None):
+    def __init__(self, *, ua, ip=None, port=None, pcapfilename=None, pcapfilter=None):
         self.ua = ua
         self.stopped = False
         self.localip = ip or ua.transport.localip
         self.localport = None
         self.wantedlocalport = port or 0
+        self.remoteip = None
+        self.remoteport = None
         self.pcapfilename = pcapfilename
         self.pcapfilter = pcapfilter
         self.codecs = [(payloadtype, codecname, codecformat) for payloadtype,(codecname, codecformat) in Media.defaultcodecs.items()]
@@ -79,21 +81,19 @@ class Media(threading.Thread):
         self.localport = localportorexc
 
     def setremoteoffer(self, sdp):
-        remoteip = None
-        remoteport = None
         for line in sdp.splitlines():
             if line.startswith(b'c='):
-                remoteip = line.split()[2].decode('ascii')
+                self.remoteip = line.split()[2].decode('ascii')
             if line.startswith(b'm='):
-                remoteport = int(line.split()[1])
-        if remoteip is not None and remoteport is not None and self.pcapfilename is not None:
+                self.remoteport = int(line.split()[1])
+        if self.remoteip is not None and self.remoteport is not None and self.pcapfilename is not None:
             if self.localport is None:
                 self.opensocket(self.localip, self.wantedlocalport)
-            self.starttransmit(remoteip, remoteport, self.pcapfilename, self.pcapfilter)
+            self.starttransmit()
         return True
 
-    def starttransmit(self, remoteip, remoteport, pcapfilename, pcapfilter):
-        self.pipe.send(('starttransmit',((remoteip, remoteport), (pcapfilename, pcapfilter))))
+    def starttransmit(self):
+        self.pipe.send(('starttransmit',((self.remoteip, self.remoteport), (self.pcapfilename, self.pcapfilter))))
         ackorexc = self.pipe.recv()
         if isinstance(ackorexc, Exception):
             log.error("%s %s", self.process, ackorexc)

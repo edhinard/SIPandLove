@@ -24,12 +24,13 @@ loghandler = logging.StreamHandler(sys.stdout)
 logformatter = ColoredFormatter()
 logformatter.default_time_format = "%H:%M:%S"
 loghandler.setFormatter(logformatter)
-loggers = {mod:logging.getLogger(mod) for mod in ('Header', 'Message', 'Transport', 'Transaction', 'Media', 'Dialog', 'UA')}
+loggers = {mod:logging.getLogger(mod) for mod in ('Header', 'Message', 'Transport', 'Transaction', 'Media', 'Dialog', 'UA', 'Main')}
 for log in loggers.values():
     log.setLevel('WARNING')
     log.addHandler(loghandler)
-
+log = logging.getLogger('Main')
 
 from .SIPBNF import URI
 from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
 from .UA import SIPPhone
+from .Media import Media

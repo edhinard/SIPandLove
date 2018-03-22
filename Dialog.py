@@ -44,3 +44,13 @@ class Dialog:
     @property
     def ident(self):
         return "{}/{}/{}".format(self.callid, self.localtag, self.remotetag)
+
+class Session(Dialog):
+    def __init__(self, request, response, uac=False, uas=False):
+        Dialog.__init__(self, request, response, uac, uas)
+        if uac:
+            self.localsdp = request.body
+            self.remotesdp = response.body
+        if uas:
+            self.localsdp = response.body
+            self.remotesdp = request.body
