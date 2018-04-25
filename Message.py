@@ -12,6 +12,7 @@ log = logging.getLogger('Message')
 
 from . import SIPBNF
 from . import Header
+from . import Tags
 try:
     from . import Milenage
 except Exception as e:
@@ -183,7 +184,7 @@ class SIPMessage(object):
         via.params['branch'] = branch
     branch = property(_getbranch, _setbranch)
     def newbranch(self, tag=None):
-        self.branch = 'z9hG4bK_{}'.format(tag or self.randomstr())
+        self.branch = Tags.branch(tag)
 
     def _getfromtag(self):
         f = self.header('From')
@@ -310,8 +311,6 @@ class RequestMeta(type):
         
 class SIPRequest(SIPMessage, metaclass=RequestMeta):
     SIPrequestclasses = {}
-    tagprefix = 'SIPandLove'
-    tagsuffix = ''
     def __init__(self, uri, *headers, body=None, method=None, **kw):
         log.debug("New request: method={} uri={}".format(method, uri))
         SIPMessage.__init__(self, *headers, body=body)
@@ -332,7 +331,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             Header.From(display=None, address=self.uri, params={}),
             Header.To(display=None, address=self.uri, params={}),
             Header.Max_Forwards(max=70),
-            Header.Call_ID(callid=self.randomstr(20)),
+            Header.Call_ID(callid=Tags.callid()),
             Header.CSeq(seq=random.randint(0,0x7fff), method=self.METHOD),
             ifmissing=True
         )
@@ -340,18 +339,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
         if self.branch is None:
             self.newbranch()
         if self.fromtag is None:
-            self.fromtag = self.randomstr()
-
-    @staticmethod
-    def settagprefix(tag):
-        SIPRequest.tagprefix = tag
-    @staticmethod
-    def settagsuffix(tag):
-        SIPRequest.tagsuffix = tag
-
-    @staticmethod
-    def randomstr(l=10):
-        return SIPRequest.tagprefix + '_' + ''.join((random.choice(string.ascii_letters) for _ in range(l))) + SIPRequest.tagsuffix
+            self.fromtag = Tags.fromto()
 
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
@@ -484,7 +472,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                            **kw)
         if code != 100 and resp.totag is None:
             if self.responsetotag is None:
-                self.responsetotag = self.randomstr()
+                self.responsetotag = Tags.fromto()
             resp.totag = self.responsetotag
         return resp
     
