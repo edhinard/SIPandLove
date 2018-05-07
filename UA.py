@@ -9,13 +9,22 @@ log = logging.getLogger('UA')
 
 from . import SIPBNF
 from . import Message
+from . import Header
 from . import Transaction
 from . import Media
 from . import Timer
 from . import Dialog
 
 class UAbase(Transaction.TransactionManager):
-    def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None, **kwargs):
+    @classmethod
+    def addmixin(cls, *mixins):
+        for mixin in mixins:
+            class newcls(mixin, cls):
+                pass
+            cls = newcls
+        return cls
+
+    def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None):
         super().__init__(transport, T1, T2, T4)
         self.proxy = proxy
         self.domain = domain
@@ -23,16 +32,6 @@ class UAbase(Transaction.TransactionManager):
         self.contacturi = SIPBNF.URI(self.addressofrecord)
         self.contacturi.host = self.transport.localip
         self.contacturi.port = self.transport.localport
-
-        # call init function of mixins, in reverse MRO and only once
-        called = []
-        for klass in reversed(self.__class__.mro()):
-            init = getattr(klass, 'mixininit', None)
-            if init and init not in called:
-                kwargs = init(self, **kwargs)
-                called.append(init)
-        if kwargs:
-            log.warning("got unexpected keyword argument {!r}".format(tuple(kwargs.keys())))
 
     def __str__(self):
         return str(self.contacturi)
@@ -51,6 +50,13 @@ class UAbase(Transaction.TransactionManager):
                 self.exception = event
 
     def sendmessage(self, message):
+        if 'sec-agree' in self.extensions:
+            if message.METHOD != 'ACK':
+                message.addheaders('Supported: sec-agree', replace=True)
+            if message.METHOD == 'REGISTER':
+                message.addheaders('Require: sec-agree', replace=True)
+                message.addheaders('Proxy-Require: sec-agree', replace=True)
+
         transaction = self.newclienttransaction(message, self.proxy)
         while True:
             event = transaction.wait()
@@ -96,12 +102,41 @@ class CancelationMixin:
 
 
 class AuthenticationMixin:
-    def mixininit(self, credentials=None, **kwargs):
+    def __init__(self, credentials=None, **kwargs):
+        super().__init__(**kwargs)
         self.credentials = credentials
-        return kwargs
     def sendmessage(self, message):
-        for result in UAbase.sendmessage(self, message):
+        security = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
+        if security:
+            username = self.credentials.get('username')
+            uri = self.credentials.get('uri', self.domain)
+            realm = self.credentials.get('realm', username.partition('@')[2])
+            message.addheaders(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
+            sa = self.transport.prepareSA(self.proxy)
+            ALGS = ('hmac-md5-96',)#'hmac-sha-1-96')
+            EALGS = ('des-ede3-cbc','aes-cbc','null')
+            for alg in ALGS:
+                for ealg in EALGS:
+                    message.addheaders(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
+        for result in super().sendmessage(message):
             if result.error and result.error.code in (401, 407):
+                if security:
+                    bestq = -1
+                    for sec in result.error.headers('security-server'):
+                        q = sec.params.get('q',0.)
+                        prot = sec.params.get('prot','esp')
+                        mod = sec.params.get('mod','trans')
+                        try:
+                            params = {k:sec.params[k] for k in ('spic', 'spis', 'portc', 'ports', 'alg')}
+                        except:
+                            continue # missing mandatory parameter
+                        params['ealg'] = sec.params.get('ealg', 'null')
+                        if sec.mechanism=='ipsec-3gpp' and prot=='esp' and mod=='trans' and params['ealg'] in EALGS and params['alg'] in ALGS and q>bestq:
+                            bestq = q
+                            securityserverparams = params
+                    if bestq == -1:
+                        log.warning("%s no matching algorithm found for SA", self)
+                        yield result
                 if self.credentials is None:
                     log.warning("%s no credential provided at initialization", self)
                     yield result
@@ -111,20 +146,24 @@ class AuthenticationMixin:
                     if auth.header is None:
                         yield UAbase.Result(Exception(auth.error))
                         return
+                    if security:
+                        self.transport.establishSA(**securityserverparams, **auth.extra)
+                        for sec in result.error.headers('security-server'):
+                            message.addheaders(Header.Security_Verify(**dict(sec)))
                     message.addheaders(auth.header, replace=True)
                     message.newbranch()
                     message.seq = message.seq + 1
-                    yield from UAbase.sendmessage(self, message)
+                    yield from super().sendmessage(message)
                     return
             else:
                 yield result
 
 
 class RegistrationMixin:
-    def mixininit(self, **kwargs):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.registermessage = None
         self.regtimer = None
-        return kwargs
 
     def register(self, expires=3600, *headers, async=False):
         if not async:
@@ -189,12 +228,12 @@ class RegistrationMixin:
 
 
 class SessionMixin:
-    def mixininit(self, mediaclass=Media.Media, mediaargs={}, **kwargs):
+    def __init__(self, mediaclass=Media.Media, mediaargs={}, **kwargs):
+        super().__init__(**kwargs)
         self.mediaclass = mediaclass
         self.mediaargs = mediaargs
         self.sessions = []
         self.lock = threading.Lock()
-        return kwargs
 
     def addsession(self, session, media):
         with self.lock:
@@ -217,7 +256,7 @@ class SessionMixin:
         return self.getsession(key, pop=True)
 
     def invite(self, touri, *headers):
-        if isinstance(touri, SIPPhone):
+        if isinstance(touri, UAbase):
             touri = touri.addressofrecord
         invite = Message.INVITE(touri, *headers)
         invite.addheaders(
@@ -333,9 +372,13 @@ class SessionMixin:
         media.stop()
         return bye.response(200)
 
-class SIPPhone(SessionMixin, RegistrationMixin, AuthenticationMixin, CancelationMixin, UAbase):
-    pass
 
+
+def SIPPhoneClass(*extensions):
+    cls = UAbase
+    cls.extensions = extensions
+    cls = cls.addmixin(CancelationMixin, AuthenticationMixin, RegistrationMixin, SessionMixin)
+    return cls
     
 if __name__ == '__main__':
     import snl

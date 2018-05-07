@@ -13,10 +13,13 @@ import struct
 import logging
 import errno
 import weakref
+import atexit
+import signal
 log = logging.getLogger('Transport')
 
 from . import Message
 from . import Header
+from . import Security
 
 
 # http://code.activestate.com/recipes/439094
@@ -28,6 +31,10 @@ def get_ip_address(ifname):
         struct.pack('256s', ifname[:15].encode('ascii'))
     )[20:24])
 
+@atexit.register
+def cleanup():
+    for transport in Transport.instances:
+        transport.stop()
 
 class Transport(multiprocessing.Process):
     instances = weakref.WeakSet()
@@ -54,16 +61,28 @@ class Transport(multiprocessing.Process):
         self.localport = localport or 5060
         self.tcp_only = tcp_only
         self.errorcb = None
-        self.pipe,self.childpipe = multiprocessing.Pipe()
-        multiprocessing.Process.__init__(self, daemon=True)
+        self.messagepipe,self.childmessagepipe = multiprocessing.Pipe()
+        self.commandpipe,self.childcommandpipe = multiprocessing.Pipe()
+        multiprocessing.Process.__init__(self)
         self.start()
-        ret = self.pipe.recv()
-        if ret is None:
-            log.debug("%s starting process %d", self, self.pid)
-        else:
-            log.error(ret)
-            log.error("%s process not started", self)
+        log.info("%s starting process %d", self, self.pid)
+        try:
+            ip,port = self.command('open', 'tcp', self.localip, self.localport)
+            log.info("%s TCP listening on %s:%d", self, ip, port)
+            ip,port = self.command('open', 'udp', self.localip, self.localport)
+            log.info("%s UDP listening on %s:%d", self, ip, port)
+        except Exception as e:
+            log.warning("%s - %s", self, e)
+
+    def stop(self):
+        self.commandpipe.send(('stop',))
+
+    def command(self, *args):
+        self.commandpipe.send(args)
+        ret = self.commandpipe.recv()
+        if isinstance(ret, Exception):
             raise ret
+        return ret
 
     def __str__(self):
         return "{}:{}".format(self.localip, self.localport)
@@ -123,11 +142,11 @@ class Transport(multiprocessing.Process):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
         log.info("%s --%s-> %s:%d\n%s", self, protocol, ip, port, message)
-        self.pipe.send((protocol, (ip, port), message.tobytes()))
+        self.messagepipe.send((protocol, (ip, port), message.tobytes()))
 
     def recv(self, timeout=None):
-        if self.pipe.poll(timeout):
-            protocol,(ip,port),message = self.pipe.recv()
+        if self.messagepipe.poll(timeout):
+            protocol,(ip,port),message = self.messagepipe.recv()
             message = Message.SIPMessage.frombytes(message)
             if message:
                 if isinstance(message, Message.SIPRequest):
@@ -141,57 +160,95 @@ class Transport(multiprocessing.Process):
                 log.info("%s <-%s-- %s:%d\n%s", self, protocol, ip, port, message)
                 return message
         return None
-                
+
+    def prepareSA(self, remoteip):
+        return self.command('sa', 'prepare', self.localip, remoteip)
+
+    def establishSA(self, **kwargs):
+        self.command('sa', 'establish', kwargs)
+
     def run(self):
-        maintcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        maintcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            maintcp.bind((self.localip, self.localport))
-            maintcp.listen()
-        except OSError as err:
-            exc = Exception("cannot bind TCP socket to {}:{}. errno={}".format(self.localip, self.localport, errno.errorcode[err.errno]))
-            self.childpipe.send(exc)
-            return
-
-        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            udp.bind((self.localip, self.localport))
-        except OSError as err:
-            exc = Exception("cannot bind UDP socket to {}:{}. errno={}".format(self.localip, self.localport, errno.errorcode[err.errno]))
-            self.childpipe.send(exc)
-            return
-
-        self.childpipe.send(None)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        sa = None
+        tcplisten = []
+        udps = []
         tcpsockets = ServiceSockets()
         while True:
-            for obj in multiprocessing.connection.wait([self.childpipe, maintcp, udp] + list(tcpsockets), 1):
-                # Packet comming from upper layer --> send to remote address
-                if obj == self.childpipe:
-                    protocol,remoteaddr,packet = self.childpipe.recv()
+            sockets = [self.childcommandpipe, self.childmessagepipe] + tcplisten + udps + list(tcpsockets)
+            for obj in multiprocessing.connection.wait(sockets, 1):
+                # Command comming from upper layer
+                if obj == self.childcommandpipe:
+                    command = self.childcommandpipe.recv()
+                    if command[0] == 'stop':
+                        if sa:
+                            sa.terminate()
+                        self.childcommandpipe.send(None)
+                        return
+                    if command[0] == 'open':
+                        protocol, localip, localport = command[1:]
+                        if protocol == 'tcp':
+                            tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                            try:
+                                tcp.bind((localip, localport))
+                                tcp.listen()
+                            except OSError as err:
+                                exc = Exception("cannot bind TCP socket to {}:{}. errno={}".format(localip, localport, errno.errorcode[err.errno]))
+                                self.childcommandpipe.send(exc)
+                            else:
+                                tcplisten.append(tcp)
+                                self.childcommandpipe.send(tcp.getsockname())
+                        elif protocol == 'udp':
+                            udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            try:
+                                udp.bind((localip, localport))
+                            except OSError as err:
+                                exc = Exception("cannot bind UDP socket to {}:{}. errno={}".format(localip, localport, errno.errorcode[err.errno]))
+                                self.childcommandpipe.send(exc)
+                            else:
+                                udps.append(udp)
+                                self.childcommandpipe.send(udp.getsockname())
+                    elif command[0] == 'sa':
+                        if command[1] == 'prepare':
+                            sa = Security.SA(*command[2:])
+                            self.childcommandpipe.send(dict(spis=sa.local.spis, spic=sa.local.spic, ports=sa.local.ports, portc=sa.local.portc,))
+                        elif command[1] == 'establish':
+                            sa.finalize(**command[2])
+                            self.childcommandpipe.send(None)
+                    else:
+                        self.childcommandpipe.send(Exception("unknown command %s", ' '.join(command)))
+                    continue
+
+                # Message comming from upper layer --> send to remote address
+                if obj == self.childmessagepipe:
+                    protocol,remoteaddr,packet = self.childmessagepipe.recv()
                     try:
                         if protocol == 'TCP':
                             tcpsockets.sendto(packet, remoteaddr)
                         elif protocol == 'UDP':
-                            udp.sendto(packet, remoteaddr)
+                            if sa and sa.state == 'created':
+                                addr = (remoteaddr[0], sa.remote.ports)
+                                sa.udpc.sendto(packet, addr)
+                            else:
+                                udps[0].sendto(packet, remoteaddr)
                         err = None
                     except Exception as e:
-                        global errordispatcher
-                        errordispatcher.pipein.send((self.localip, self.localport, *remoteaddr, str(e), packet))
+                        dispatcherror(self.localip, self.localport, *remoteaddr, str(e), packet)
                         continue
 
                 # Incomming TCP connection --> new socket added (will be read in the next result of poll)
-                elif obj == maintcp:
-                    tcpsockets.add(*maintcp.accept())
+                elif obj in tcplisten:
+                    tcpsockets.add(*obj.accept())
 
                 # Incomming UDP packet --> decode and send to upper layer
-                elif obj == udp:
-                    packet,remoteaddr = udp.recvfrom(65536)
+                elif obj in udps:
+                    packet,remoteaddr = obj.recvfrom(65536)
                     decodeinfo = Message.SIPMessage.predecode(packet)
                     # Discard inconsistent messages
                     if decodeinfo.status != 'OK':
                         continue
                     
-                    self.childpipe.send(('UDP',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
+                    self.childmessagepipe.send(('UDP',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
 
                 # Incomming TCP buffer --> assemble with previous buffer(done by ServiceSocket class), decode and send to upper layer
                 else:
@@ -209,7 +266,7 @@ class Transport(multiprocessing.Process):
                         if decodeinfo.status != 'OK':
                             break
 
-                        self.childpipe.send(('TCP',remoteaddr,buf[decodeinfo.istart:decodeinfo.iend]))
+                        self.childmessagepipe.send(('TCP',remoteaddr,buf[decodeinfo.istart:decodeinfo.iend]))
                         del buf[:decodeinfo.iend]
                             
             tcpsockets.cleanup()
@@ -280,14 +337,21 @@ class ErrorDispatcher(threading.Thread):
         while True:
             for pipe in multiprocessing.connection.wait((self.pipeout1, self.pipeout2)):
                 srcip, srcport, dstip, dstport, err, data = pipe.recv()
+                if pipe == self.pipeout1:
+                    protocol = 'ICMP'
+                else:
+                    protocol = 'ERR-'
                 message = Message.SIPMessage.frombytes(data)
                 if message:
                     for transport in Transport.instances:
                         if transport.localip == srcip and transport.localport == srcport:
-                            log.info("%s <-ERR-- %s:%d %s\n%s", transport, dstip, dstport, err, message)
+                            log.info("%s <-%s- %s:%d %s\n%s", transport, protocol, dstip, dstport, err, message)
                             if transport.errorcb:
                                 transport.errorcb(message, err)
                             break
+def dispatcherror(*args):
+    global errordispatcher
+    errordispatcher.pipein.send(args)
 
 class ICMPProcess(multiprocessing.Process):
     def __init__(self, pipe):
@@ -296,6 +360,7 @@ class ICMPProcess(multiprocessing.Process):
         self.start()
 
     def run(self):
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
         try:
             rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
         except:
@@ -328,21 +393,18 @@ class ICMPProcess(multiprocessing.Process):
                 continue # ignored type
             ip2proto, = struct.unpack_from('B', packet, 20+8+9)
             if ip2proto == 6: # TCP
-                data = packet[20+8+20+20:]
+                payload = packet[20+8+20+20:]
             elif ip2proto == 17: # UDP
-                data = packet[20+8+20+8:]
+                payload = packet[20+8+20+8:]
             else:
                 continue # ignored transport
-            message = Message.SIPMessage.frombytes(data)
-            if not message:
-                continue # no message
 
-            # send message in ICMP to ErrorDispatcher
+            # send ICMP payload to ErrorDispatcher
             srcip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+12)))
             dstip = '.'.join((str(b) for b in struct.unpack_from('4B', packet, 20+8+16)))
             dstport, = struct.unpack_from('!H', packet, 20+8+20+2)
             srcport, = struct.unpack_from('!H', packet, 20+8+20+0)
-            self.pipe.send((srcip, srcport, dstip, dstport, err, data))
+            self.pipe.send((srcip, srcport, dstip, dstport, err, payload))
 
 errordispatcher = ErrorDispatcher()
 

@@ -13,6 +13,7 @@ import time
 import logging
 import errno
 import collections
+import signal
 log = logging.getLogger('Media')
 
 class Media(threading.Thread):
@@ -120,6 +121,7 @@ class MediaProcess(multiprocessing.Process):
         return "pid:{}".format(self.pid)
 
     def run(self):
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
         log.info("%s starting process", self)
 
         running = True

@@ -1,8 +1,6 @@
 # coding: utf-8
 
 import re
-import base64
-import binascii
 import hashlib
 import random
 import string
@@ -13,12 +11,7 @@ log = logging.getLogger('Message')
 from . import SIPBNF
 from . import Header
 from . import Tags
-try:
-    from . import Milenage
-except Exception as e:
-    log.warning("cannot import Milenage (%s). AKAv1 authentication is impossible", e)
-    Milenage = False
-
+from . import Security
 
 CRLF = b'\r\n'
 STATUS_LINE_RE = re.compile(b'(?:\r\n|^)SIP/2.0 (?P<code>[1-7]\d\d) (?P<reason>.+)\r\n', re.IGNORECASE)
@@ -363,31 +356,41 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                 continue
 
             if algorithm.lower() == 'akav1-md5':
-                if not Milenage:
-                    log.info("Milenage not present. Cannot satisfy AKAv1 authentication")
-                    continue
-                if not 'K' in kwargs:
-                    log.info("missing 'K' argument. Cannot satisfy AKAv1 authentication")
-                    continue
-                K = kwargs.pop('K')
-                if not isinstance(K, bytes) or len(K)!=16:
-                    log.info("expecting a 16 bytes string for K, got {!r}. Cannot satisfy AKAv1 authentication".format(K))
-                    continue
+                K = kwargs.pop('K', None)
+                if K is None:
+                    log.warning("missing K in credentials. Using 0")
+                    K = 16*b'\x00'
+                if len(K) < 16:
+                    log.warning("K too short. Padding with 0")
+                    K = K + (16-len(K))*b'\x00'
+                if len(K) > 16:
+                    log.warning("K too long. Keeping MSB")
+                    K = K[:16]
+                OP = kwargs.pop('OP', None)
+                if OP is None:
+                    log.warning("missing OP in credentials. Using 0")
+                    OP = 16*b'\x00'
+                if len(OP) < 16:
+                    log.warning("OP too short. Padding with 0")
+                    OP = OP + (16-len(OP))*b'\x00'
+                if len(OP) > 16:
+                    log.warning("OP too long. Keeping MSB")
+                    OP = OP[:16]
                 try:
-                    password,ik,ck = self.AKA(authenticate.params.get('nonce'), K)
+                    res,ik,ck = Security.AKA(authenticate.params.get('nonce'), K, OP)
                 except Exception as e:
-                    log.warning(e)
+                    log.warning(str(e) + ". Cannot satisfy AKAv1 authentication")
                     continue
-                kwargs['password'] = password
-                extra = dict(aka=True, ik=ik, ck=ck)
+                kwargs['password'] = res
+                extra = dict(ik=ik, ck=ck)
 
             username = kwargs.pop('username', None)
             if username is None:
-                log.info("missing 'username' argument needed by Digest authentication")
+                log.warning("missing 'username' argument needed by Digest authentication")
                 continue
             password = kwargs.pop('password', None)
             if password is None:
-                log.info("missing 'password' argument needed by Digest authentication")
+                log.warning("missing 'password' argument needed by Digest authentication")
                 continue
             params = self.digest(realm = authenticate.params.get('realm'),
                                  nonce = authenticate.params.get('nonce'),
@@ -403,21 +406,6 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                 auth=Header.Proxy_Authorization(scheme=authenticate.scheme, params=params)
             return Auth(header=auth, extra=extra)
         return Auth(header=None, error="impossible to authenticate with received headers")
-
-    @staticmethod
-    def AKA(nonce, K):
-        try:
-            bin_nonce = base64.b64decode(nonce, validate=True)
-        except binascii.Error:
-            raise Exception("nonce value is not base64 encoded")
-        rand = bin_nonce[:16]
-        autn = bin_nonce[16:32]
-        if len(autn) < 16:
-            raise Exception("nonce value is not long enough")
-
-        res, ck, ik, ak = Milenage.Milenage(OP=16*b'\x00').f2345(K, rand)
-        return res, ik, ck
-
 
     def digest(self, *, realm, nonce, algorithm, cnonce, qop, nc, username, password):
         uri = str(self.uri)
@@ -497,6 +485,8 @@ class BYE(SIPRequest):
     pass
 
 if __name__ == '__main__':
+    import base64
+    import binascii
     import snl
     snl.loggers['Message'].setLevel('INFO')
 

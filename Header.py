@@ -252,9 +252,11 @@ class Header(metaclass=HeaderMeta):
         except:
             pass
         return "{}: {}".format(self._name, repr(self._display())[2:-1])
+    def __iter__(self):
+        for k in self._args:
+            yield k, getattr(self,k)
     def __repr__(self):
-        args = ("{}={!r}".format(k,getattr(self,k)) for k in self._args)
-        return '{}({})'.format(self._name, ", ".join(args))
+        return '{}({!r})'.format(self._name, dict(self))
     _args = ('value',)
     def _display(self):
         return self.value
@@ -406,6 +408,13 @@ class Via(Header):
 class WWW_Authenticate(Header):
     pass
 
+class Security_Client(Header):
+    pass
+class Security_Server(Header):
+    pass
+class Security_Verify(Header):
+    pass
+
 
 if __name__ == '__main__':
     import sys
@@ -482,7 +491,8 @@ if __name__ == '__main__':
 
         'Content-Length:  0',
         'toto: titi',
-        'toto:tutu'
+        'toto:tutu',
+        'Security-Server: ipsec-3gpp; ealg=null; alg=hmac-md5-96; spi-c=123; spi-s=1234; port-c=12345; port-s=123456; prot=esp; mod=trans; q=0.1'
         )
 
 
@@ -492,7 +502,7 @@ if __name__ == '__main__':
             headers = Headers(string, strictparsing=True)
         except Exception as err:
             sys.exit(1)
-        for header in headers:
+        for header in headers.list():
             print(">",header)
             print(repr(header))
             print()

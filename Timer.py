@@ -5,6 +5,7 @@ import multiprocessing
 import threading
 import time
 import logging
+import signal
 log = logging.getLogger('Timer')
 
 
@@ -53,6 +54,7 @@ class TimerManager(threading.Thread):
     # Process loop
     @staticmethod
     def processloop(pipe):
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
         sortedtimers = []
         while True:
             #

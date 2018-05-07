@@ -674,7 +674,7 @@ addr_spec = SIP_SIPS_URI | absoluteURI
 tokenLWS = pp.Word(pp.alphanums + '-.!%*_+`\'~ \t')
 display_name = pp.Combine(tokenLWS) | quoted_string.setParseAction(lambda s,loc,toks:[unquote(toks[0])])
 name_addr = pp.Optional(display_name, None)('display') + pp.Suppress(LAQUOT)('aquot').setParseAction(lambda s,loc,toks:[True]) + addr_spec + pp.Suppress(RAQUOT)
-c_p_q = pp.CaselessLiteral('q') + pp.Suppress(EQUAL) + qvalue
+c_p_q = pp.CaselessLiteral('q') + pp.Suppress(EQUAL) + qvalue.setParseAction(lambda s,loc,toks:[int(toks[0])])
 delta_seconds =  pp.Word(pp.nums, min=1).setParseAction(lambda s,loc,toks:[int(toks[0])])
 c_p_expires = pp.CaselessLiteral('expires') + pp.Suppress(EQUAL) + delta_seconds
 contact_params = c_p_q | c_p_expires  | generic_param
@@ -1088,3 +1088,79 @@ WWW_AuthenticateDisplay = Proxy_AuthenticateDisplay
 #header-name       =  token
 #header-value      =  *(TEXT-UTF8char / UTF8-CONT / LWS)
 #message-body  =  *OCTET
+
+
+
+#RFC 3329                 SIP Security Agreement
+#      security-client  = "Security-Client" HCOLON
+#                         sec-mechanism *(COMMA sec-mechanism)
+#      security-server  = "Security-Server" HCOLON
+#                         sec-mechanism *(COMMA sec-mechanism)
+#      security-verify  = "Security-Verify" HCOLON
+#                         sec-mechanism *(COMMA sec-mechanism)
+#      sec-mechanism    = mechanism-name *(SEMI mech-parameters)
+#      mechanism-name   = ( "digest" / "tls" / "ipsec-ike" /
+#                          "ipsec-man" / token )
+#      mech-parameters  = ( preference / digest-algorithm /
+#                           digest-qop / digest-verify / extension )
+#      preference       = "q" EQUAL qvalue
+#      qvalue           = ( "0" [ "." 0*3DIGIT ] )
+#                          / ( "1" [ "." 0*3("0") ] )
+#      digest-algorithm = "d-alg" EQUAL token
+#      digest-qop       = "d-qop" EQUAL token
+#      digest-verify    = "d-ver" EQUAL LDQUOT 32LHEX RDQUOT
+#      extension        = generic-param
+
+# 3GPP TS33.203
+#      mechanism-name   = "ipsec-3gpp" / "tls"
+#      mech-parameters  = ( preference / algorithm / protocol / mode / encrypt-algorithm / spi‑c / spi‑s / port‑c / port‑s )
+#      algorithm        = "alg" EQUAL ( "hmac-md5-96" / "hmac-sha-1-96" )
+#      protocol         = "prot" EQUAL ( "ah" / "esp" )
+#      mode             = "mod" EQUAL ( "trans" / "tun" / "UDP-enc-tun"  )
+#      encrypt-algorithm= "ealg" EQUAL ( "des-ede3-cbc" / "aes-cbc" / "null" )
+#      spi‑c            = "spi‑c" EQUAL spivalue
+#      spi‑s            = "spi‑s" EQUAL spivalue
+#      spivalue         = 10DIGIT; 0 to 4294967295
+#      port‑c           = "port‑c" EQUAL port
+#      port‑s           = "port‑s" EQUAL port
+#      port             = 1*DIGIT
+mechanism_name = token('mechanism')
+preference = pp.CaselessLiteral('q') + pp.Suppress(EQUAL) + qvalue.setParseAction(lambda s,loc,toks:[float(toks[0])])
+spivalue = pp.Word(pp.nums).setParseAction(lambda s,loc,toks:[int(toks[0])])
+spi_c = pp.CaselessLiteral('spi-c') + pp.Suppress(EQUAL) + spivalue
+spi_s = pp.CaselessLiteral('spi-s') + pp.Suppress(EQUAL) + spivalue
+port = pp.Word(pp.nums).setParseAction(lambda s,loc,toks:[int(toks[0])])
+port_c = pp.CaselessLiteral('port-c') + pp.Suppress(EQUAL) + port
+port_s = pp.CaselessLiteral('port-s') + pp.Suppress(EQUAL) + port
+mech_parameters = preference | spi_c | spi_s | port_c | port_s | generic_param
+sec_mechanism = mechanism_name + pp.ZeroOrMore(pp.Suppress(SEMI) + mech_parameters)('hparams')
+Security_Client = Parser('Security header', pp.Group(sec_mechanism) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + sec_mechanism)))
+Security_ClientArgs = ('mechanism', 'params')
+def Security_ClientParse(headervalue):
+    for res in Security_Client.parse(headervalue):
+        mechanism = res.get('mechanism')
+        params = res.get('hparams')
+        if params:
+            ks = params[0::2]; vs = params[1::2]
+            params = ParameterDict(zip((k.replace('-','') for k in ks),vs))
+        else:
+            params = ParameterDict()
+        yield dict(mechanism=mechanism, params=params)
+def addminus(parameter):
+    if parameter in ('spic', 'spis', 'portc', 'ports'):
+        parameter = '{}-{}'.format(parameter[:-1], parameter[-1])
+    return parameter
+def Security_ClientDisplay(security):
+    params = (";{}={}".format(addminus(k),v) for k,v in security.params.items())
+    return "{}{}".format(security.mechanism, ''.join(params))
+Security_ClientMultiple = True
+
+Security_ServerArgs = Security_ClientArgs
+Security_ServerParse = Security_ClientParse
+Security_ServerDisplay = Security_ClientDisplay
+Security_ServerMultiple = Security_ClientMultiple
+
+Security_VerifyArgs = Security_ClientArgs
+Security_VerifyParse = Security_ClientParse
+Security_VerifyDisplay = Security_ClientDisplay
+Security_VerifyMultiple = Security_ClientMultiple
