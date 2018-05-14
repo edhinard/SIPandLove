@@ -14,6 +14,7 @@ from . import Transaction
 from . import Media
 from . import Timer
 from . import Dialog
+from . import Security
 
 class UAbase(Transaction.TransactionManager):
     @classmethod
@@ -375,6 +376,8 @@ class SessionMixin:
 
 
 def SIPPhoneClass(*extensions):
+    if 'sec-agree' in extensions and not Security.SEC_AGREE:
+        raise Exception('sec-agree is not possible. try to run script as root')
     cls = UAbase
     cls.extensions = extensions
     cls = cls.addmixin(CancelationMixin, AuthenticationMixin, RegistrationMixin, SessionMixin)

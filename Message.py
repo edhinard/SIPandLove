@@ -1,7 +1,6 @@
 # coding: utf-8
 
 import re
-import hashlib
 import random
 import string
 import collections
@@ -392,64 +391,22 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             if password is None:
                 log.warning("missing 'password' argument needed by Digest authentication")
                 continue
-            params = self.digest(realm = authenticate.params.get('realm'),
-                                 nonce = authenticate.params.get('nonce'),
-                                 algorithm = algorithm,
-                                 qop=authenticate.params.get('qop'),
-                                 nc=nc,
-                                 cnonce=cnonce or ''.join((random.choice(string.ascii_letters) for _ in range(20))),
-                                 username=username,
-                                 password=password)
+            params = Security.digest(
+                request=self,
+                realm=authenticate.params.get('realm'),
+                nonce=authenticate.params.get('nonce'),
+                algorithm=algorithm,
+                qop=authenticate.params.get('qop'),
+                nc=nc,
+                cnonce=cnonce or ''.join((random.choice(string.ascii_letters) for _ in range(20))),
+                username=username,
+                password=password)
             if authenticate._name == 'WWW-Authenticate':
                 auth=Header.Authorization(scheme=authenticate.scheme, params=params)
             else:
                 auth=Header.Proxy_Authorization(scheme=authenticate.scheme, params=params)
             return Auth(header=auth, extra=extra)
         return Auth(header=None, error="impossible to authenticate with received headers")
-
-    def digest(self, *, realm, nonce, algorithm, cnonce, qop, nc, username, password):
-        uri = str(self.uri)
-        if qop:
-            qop = qop.lower()
-            for q in qop.split(','):
-                if q == 'auth':
-                    qop = 'auth'
-                    break
-                if q == 'auth-int':
-                    qop = 'auth_int'
-                    break
-            else:
-                log.warning("ignoring unknown qop %s. auth or auth-int was expected", qop)
-                qop = None
-        params = dict(realm = realm,
-                      uri = uri,
-                      username = username,
-                      nonce = nonce,
-                      algorithm = algorithm,
-                      qop=qop,
-        )
-        
-        ha1 = self.md5hash(username, realm, password)
-        if algorithm and algorithm.lower() == 'md5-sess':
-            ha1 = self.md5hash(ha1, nonce, cnonce)
-            params.update(cnonce=cnonce)
-            
-        if not qop or qop == 'auth':
-            ha2 = self.md5hash(self.method, uri)
-        else:
-            ha2 = self.md5hash(self.method, uri, self.md5hash(self.body))
-
-        if not qop:
-            response = self.md5hash(ha1, nonce, ha2)
-        else:
-            response = self.md5hash(ha1, nonce, "{:08x}".format(nc), cnonce, qop, ha2)
-            params.update(cnonce=cnonce, nc=nc)
-        params.update(response=response)
-        return params
-
-    def md5hash(self, *params):
-        s = b':'.join((param.encode('utf-8') if isinstance(param, str) else param for param in params))
-        return hashlib.md5(s).hexdigest()
 
     def response(self, code, *headers, body=None, reason=None, **kw):
         resp = SIPResponse(code,

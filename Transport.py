@@ -209,12 +209,15 @@ class Transport(multiprocessing.Process):
                                 udps.append(udp)
                                 self.childcommandpipe.send(udp.getsockname())
                     elif command[0] == 'sa':
-                        if command[1] == 'prepare':
-                            sa = Security.SA(*command[2:])
-                            self.childcommandpipe.send(dict(spis=sa.local.spis, spic=sa.local.spic, ports=sa.local.ports, portc=sa.local.portc,))
-                        elif command[1] == 'establish':
-                            sa.finalize(**command[2])
-                            self.childcommandpipe.send(None)
+                        try:
+                            if command[1] == 'prepare':
+                                sa = Security.SA(*command[2:])
+                                self.childcommandpipe.send(dict(spis=sa.local.spis, spic=sa.local.spic, ports=sa.local.ports, portc=sa.local.portc,))
+                            elif command[1] == 'establish':
+                                sa.finalize(**command[2])
+                                self.childcommandpipe.send(None)
+                        except Exception as exc:
+                            self.childcommandpipe.send(exc)
                     else:
                         self.childcommandpipe.send(Exception("unknown command %s", ' '.join(command)))
                     continue
@@ -364,7 +367,7 @@ class ICMPProcess(multiprocessing.Process):
         try:
             rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
         except:
-            log.warning("Cannot open raw socket for ICMP. Administrator privilege needed to do so")
+            log.warning("Cannot open raw socket for ICMP")
             return
 
         while True:

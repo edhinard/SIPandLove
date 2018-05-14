@@ -5,6 +5,7 @@ import socket
 import logging
 import weakref
 import subprocess
+import hashlib
 import base64
 import binascii
 import operator
@@ -15,41 +16,118 @@ log = logging.getLogger('Security')
 try:
     from . import Milenage
 except Exception as e:
-    log.warning("cannot import Milenage (%s). AKAv1 authentication is not possible", e)
+    log.warning("cannot import Milenage (%s). AKA authentication is not possible", e)
     Milenage = False
 
+p = subprocess.Popen(['ip', 'xfrm', 'state'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+out,err = p.communicate()
+if p.returncode != 0:
+    log.warning("Cannot run ip xfrm command (%s)", err.decode('utf-8').replace('\n', ' '))
+    SEC_AGREE = False
+else:
+    SEC_AGREE = True
+
+
+def digest(*, request, realm, nonce, algorithm, cnonce, qop, nc, username, password):
+    log.info("--DIGEST --")
+    uri = str(request.uri)
+    if qop:
+        qop = qop.lower()
+        for q in qop.split(','):
+            if q == 'auth':
+                qop = 'auth'
+                break
+            if q == 'auth-int':
+                qop = 'auth_int'
+                break
+        else:
+            log.warning("ignoring unknown qop %s. auth or auth-int was expected", qop)
+            qop = None
+    log.info("realm     = %r", realm)
+    log.info("uri       = %r", uri)
+    log.info("username  = %r", username)
+    log.info("nonce     = %r", nonce)
+    log.info("algorithm = %r", algorithm)
+    log.info("qop       = %r", qop)
+    params = dict(realm = realm,
+                  uri = uri,
+                  username = username,
+                  nonce = nonce,
+                  algorithm = algorithm,
+                  qop=qop,
+    )
+
+    log.info("password  = %r", password)
+    ha1 = md5hash(username, realm, password)
+    log.info("ha1       = %r", ha1)
+    if algorithm and algorithm.lower() == 'md5-sess':
+        ha1 = md5hash(ha1, nonce, cnonce)
+        params.update(cnonce=cnonce)
+        log.info("ha1       = %r", ha1)
+
+    if not qop or qop == 'auth':
+        ha2 = md5hash(request.method, uri)
+    else:
+        ha2 = md5hash(request.method, uri, md5hash(request.body))
+    log.info("ha2       = %r", ha2)
+
+    if not qop:
+        response = md5hash(ha1, nonce, ha2)
+    else:
+        response = md5hash(ha1, nonce, "{:08x}".format(nc), cnonce, qop, ha2)
+        params.update(cnonce=cnonce, nc=nc)
+        log.info("cnonce    = %r", cnonce)
+        log.info("nc        = %r", nc)
+    params.update(response=response)
+    log.info("-----------")
+    log.info("response  = %r", response)
+    log.info("")
+
+    return params
+
+def md5hash(*params):
+    s = b':'.join((param.encode('utf-8') if isinstance(param, str) else param for param in params))
+    return hashlib.md5(s).hexdigest()
 
 def AKA(nonce, K, OP):
+    log.info("--- AKA ---")
     if not Milenage:
         raise Exception("Milenage not present")
+    log.info("OP   = %s", OP.hex())
+    log.info("K    = %s", K.hex())
+    log.info("nonce= %r", nonce)
     try:
         nonce = base64.b64decode(nonce, validate=True)
     except binascii.Error:
         raise Exception("nonce value is not base64 encoded")
+    log.info("nonce= %s", nonce.hex())
     if len(nonce) < 32:
         raise Exception("nonce is {} bytes long (at least 32 expected)".format(len(nonce)))
     RAND = nonce[:16]
     SQNxorAK = nonce[16:22]
     AMF = nonce[22:24]
     MAC = nonce[24:32]
+    log.info("RAND = %s", RAND.hex())
+    log.info("SQNAK= %s", SQNxorAK.hex())
+    log.info("AMF  = %s", AMF.hex())
+    log.info("MAC  = %s", MAC.hex())
 
+    log.info("-----------")
     milenage = Milenage.Milenage(OP=OP)
     RES, CK, IK, AK = milenage.f2345(K, RAND)
+    log.info("RES  = %s", RES.hex())
+    log.info("IK   = %s", IK.hex())
+    log.info("CK   = %s", CK.hex())
+    log.info("AK   = %s", AK.hex())
     SQN = bytes(map(operator.__xor__, SQNxorAK, AK)) 
+    log.info("SQN  = %s", SQN.hex())
     XMAC = milenage.f1(K, RAND, SQN, AMF)
-    log.info("OP  =%s", OP.hex())
-    log.info("K   =%s", K.hex())
-    log.info("RAND=%s", RAND.hex())
-    log.info("AK  =%s", AK.hex())
-    log.info("SQN =%s", SQN.hex())
-    log.info("AMF =%s", AMF.hex())
-    log.info("MAC =%s", MAC.hex())
-    log.info("XMAC=%s", XMAC.hex())
-    log.info("RES =%s", RES.hex())
-    log.info("IK  =%s", IK.hex())
-    log.info("CK  =%s", CK.hex())
+    log.info("XMAC = %s", XMAC.hex())
     if MAC != XMAC:
         raise Exception("XMAC does not match MAC")
+    else:
+        log.info("XMAC and MAC match")
+    log.info("")
 
     return RES, IK, CK
 
@@ -196,7 +274,7 @@ class SA:
         out,err = p.communicate()
         log.info("%s --> %d", ' '.join(cmd), p.returncode)
         if p.returncode != 0:
-            raise Exception(err.decode('utf-8'))
+            raise Exception("ip xfrm --> {}".format(err.decode('utf-8')))
         return out
 
 
