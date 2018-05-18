@@ -34,3 +34,4 @@ from .SIPBNF import URI
 from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
 from .UA import SIPPhoneClass
 from .Media import Media
+from .Transport import Transport

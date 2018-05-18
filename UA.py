@@ -15,16 +15,9 @@ from . import Media
 from . import Timer
 from . import Dialog
 from . import Security
+from . import Transport
 
 class UAbase(Transaction.TransactionManager):
-    @classmethod
-    def addmixin(cls, *mixins):
-        for mixin in mixins:
-            class newcls(mixin, cls):
-                pass
-            cls = newcls
-        return cls
-
     def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None):
         super().__init__(transport, T1, T2, T4)
         self.proxy = proxy
@@ -106,22 +99,23 @@ class AuthenticationMixin:
     def __init__(self, credentials=None, **kwargs):
         super().__init__(**kwargs)
         self.credentials = credentials
+        self.sa = None
+        self.savedproxy = None
     def sendmessage(self, message):
-        security = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
-        if security:
+#        message.removeheaders('security-client')
+        needsecurity = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
+        if needsecurity and self.sa is None:
             username = self.credentials.get('username')
             uri = self.credentials.get('uri', self.domain)
             realm = self.credentials.get('realm', username.partition('@')[2])
             message.addheaders(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
-            sa = self.transport.prepareSA(self.proxy)
-            ALGS = ('hmac-md5-96',)#'hmac-sha-1-96')
-            EALGS = ('des-ede3-cbc','aes-cbc','null')
-            for alg in ALGS:
-                for ealg in EALGS:
-                    message.addheaders(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
+            self.sa = self.transport.prepareSA(Transport.splitaddr(self.proxy)[0])
+            for alg in Security.IPSEC_ALGS:
+                for ealg in Security.IPSEC_EALGS:
+                    message.addheaders(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
         for result in super().sendmessage(message):
             if result.error and result.error.code in (401, 407):
-                if security:
+                if needsecurity:
                     bestq = -1
                     for sec in result.error.headers('security-server'):
                         q = sec.params.get('q',0.)
@@ -132,7 +126,7 @@ class AuthenticationMixin:
                         except:
                             continue # missing mandatory parameter
                         params['ealg'] = sec.params.get('ealg', 'null')
-                        if sec.mechanism=='ipsec-3gpp' and prot=='esp' and mod=='trans' and params['ealg'] in EALGS and params['alg'] in ALGS and q>bestq:
+                        if sec.mechanism=='ipsec-3gpp' and prot=='esp' and mod=='trans' and params['ealg'] in Security.IPSEC_EALGS and params['alg'] in Security.IPSEC_ALGS and q>bestq:
                             bestq = q
                             securityserverparams = params
                     if bestq == -1:
@@ -147,18 +141,31 @@ class AuthenticationMixin:
                     if auth.header is None:
                         yield UAbase.Result(Exception(auth.error))
                         return
-                    if security:
+                    if needsecurity:
                         self.transport.establishSA(**securityserverparams, **auth.extra)
                         for sec in result.error.headers('security-server'):
                             message.addheaders(Header.Security_Verify(**dict(sec)))
+                        self.savedproxy = self.proxy
+                        self.proxy = (Transport.splitaddr(self.proxy)[0], securityserverparams['ports'])
+                        self.contacturi.port = self.sa['ports']
+                        message.contactaddr.port = self.sa['ports']
                     message.addheaders(auth.header, replace=True)
-                    message.newbranch()
                     message.seq = message.seq + 1
                     yield from super().sendmessage(message)
                     return
             else:
                 yield result
 
+    def _register(self, expires=3600, *headers):
+        registered = super()._register(expires, *headers)
+        if not registered and self.sa:
+            self.transport.terminateSA()
+            self.sa = None
+            if self.savedproxy:
+                self.proxy = self.savedproxy
+                self.savedproxy = None
+            self.contacturi.port = self.transport.localport
+        return registered
 
 class RegistrationMixin:
     def __init__(self, **kwargs):
@@ -185,14 +192,12 @@ class RegistrationMixin:
                 'From: {}'.format(self.addressofrecord),
                 'To: {}'.format(self.addressofrecord),
                 'Contact: {}'.format(self.contacturi),
-                'Expires: {}'.format(expires),
                 ifmissing=True
             )
-            self.registermessage.enforceheaders()
         else:
-            self.registermessage.seq = self.registermessage.seq + 1
-            self.registermessage.newbranch()
-        self.registermessage.addheaders('Expires: {}'.format(expires), replace=True)
+            self.registermessage.addheaders(*headers, replace=True)
+            self.registermessage.seq += 1
+        self.registermessage.addheaders(Header.Expires(delta=expires), replace=True)
         for result in self.sendmessage(self.registermessage):
             if result.success:
                 expiresheader = result.success.header('Expires')
@@ -373,14 +378,19 @@ class SessionMixin:
         media.stop()
         return bye.response(200)
 
+def addmixin(cls, *mixins):
+    for mixin in mixins:
+        class newcls(mixin, cls):
+            pass
+        cls = newcls
+    return cls
 
-
-def SIPPhoneClass(*extensions):
-    if 'sec-agree' in extensions and not Security.SEC_AGREE:
+def SIPPhoneClass(*ext):
+    if 'sec-agree' in ext and not Security.SEC_AGREE:
         raise Exception('sec-agree is not possible. try to run script as root')
-    cls = UAbase
-    cls.extensions = extensions
-    cls = cls.addmixin(CancelationMixin, AuthenticationMixin, RegistrationMixin, SessionMixin)
+    class cls(UAbase):
+        extensions = ext
+    cls = addmixin(cls, CancelationMixin, RegistrationMixin, AuthenticationMixin, SessionMixin)
     return cls
     
 if __name__ == '__main__':

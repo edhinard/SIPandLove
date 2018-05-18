@@ -36,6 +36,26 @@ def cleanup():
     for transport in Transport.instances:
         transport.stop()
 
+def splitaddr(addr):
+    addr = addr or (None,5060)
+    if isinstance(addr, str):
+        if ':' in addr:
+            ip,port = addr.split(':', 1)
+        else:
+            ip = addr
+            port = 5060
+    elif isinstance(addr, (list,tuple)):
+        if len(addr) != 2:
+            raise Exception("expecting 2 values in addr ({!r})".format(addr))
+        ip,port = addr
+    else:
+        raise Exception("addr should be a 2uple or a string not {!r}".format(addr))
+    try:
+        port = int(port)
+    except:
+        raise Exception("port number in addr ({!r}) should be an int".format(port))
+    return ip,port
+
 class Transport(multiprocessing.Process):
     instances = weakref.WeakSet()
     def __new__(cls, *args, **kwargs):
@@ -59,6 +79,8 @@ class Transport(multiprocessing.Process):
         else:
             self.localip = localiporinterface
         self.localport = localport or 5060
+        self.localsa = self.remotesa = None
+        self.establishedSA = False
         self.tcp_only = tcp_only
         self.errorcb = None
         self.messagepipe,self.childmessagepipe = multiprocessing.Pipe()
@@ -68,11 +90,12 @@ class Transport(multiprocessing.Process):
         log.info("%s starting process %d", self, self.pid)
         try:
             ip,port = self.command('open', 'tcp', self.localip, self.localport)
-            log.info("%s TCP listening on %s:%d", self, ip, port)
+            log.info("TCP listening on %s:%d", ip, port)
             ip,port = self.command('open', 'udp', self.localip, self.localport)
-            log.info("%s UDP listening on %s:%d", self, ip, port)
+            log.info("UDP listening on %s:%d", ip, port)
         except Exception as e:
-            log.warning("%s - %s", self, e)
+            log.error("%s - %s", self, e)
+            raise Exception("Transport initialization error") from None
 
     def stop(self):
         self.commandpipe.send(('stop',))
@@ -89,48 +112,49 @@ class Transport(multiprocessing.Process):
 
     def send(self, message, addr=None, protocol=None):
         if not isinstance(message, Message.SIPMessage):
-            raise TypeError("expecting SIPMessage subclass as message")
-        addr = addr or (None,5060)
-        if isinstance(addr, (list,tuple)):
-            if len(addr) != 2:
-                raise Exception("expecting 2 values in addr, got {!r}".format(addr))
-            ip,port = addr
-        elif isinstance(addr, str):
-            if ':' in addr:
-                ip,port = addr.split(':', 1)
-                port = int(port)
-            else:
-                ip = addr
-                port = 5060
-        else:
-            raise Exception("expecting a 2uple or a string for addr, got {!r}".format(addr))
+            err = "expecting a SIPMessage not {}".format(type(message))
+            log.error("%s %s", self, err)
+            raise TypeError(err)
+        try:
+            dstip, dstport = splitaddr(addr)
+        except Exception as err:
+            log.error("%s %s", self, err)
+            raise
+
+        srcport = self.localport
+        if self.localsa and self.remotesa and dstip == self.remotesa['ip']:
+            if dstport == self.remotesa['ports']:
+                srcport = self.localsa['portc']
+            elif dstport == self.remotesa['portc']:
+                srcport = self.localsa['ports']
 
         via = message.header('via')
         if isinstance(message, Message.SIPRequest):
-            if ip is None:
+            if dstip is None:
                 raise Exception("missing address")
 
             protocol = 'TCP' if self.tcp_only else 'UDP'
             if via:
-                if via.protocol == '???':
-                    via.protocol = protocol
-                if via.host == '0.0.0.0':
-                    via.host = self.localip
-                if via.port == None and self.localport != 5060:
-                    via.port = self.localport
+                via.protocol = protocol
+                via.host = self.localip
+                port = self.localsa['ports'] if self.establishedSA else self.localport
+                if port != 5060:
+                    via.port = port
+                else:
+                    via.port = None
 
         elif isinstance(message, Message.SIPResponse):
             if via:
                 protocol = via.protocol
             else:
                 protocol = 'TCP' if self.tcp_only else 'UDP'
-            if ip is None:
+            if dstip is None:
                 if via:
                     if protocol == 'TCP':
-                        ip = via.host
+                        dstip = via.host
                     else:
-                        ip = via.params.get('received', via.host)
-            if ip is None:
+                        dstip = via.params.get('received', via.host)
+            if dstip is None:
                 raise Exception("no address where to send response")
             if via:
                 if protocol == 'TCP':
@@ -141,31 +165,45 @@ class Transport(multiprocessing.Process):
         if (protocol == 'TCP' or len(message.body)) and not message.header('l'):
             message.addheaders(Header.Content_Length(length=len(message.body)))
 
-        log.info("%s --%s-> %s:%d\n%s", self, protocol, ip, port, message)
-        self.messagepipe.send((protocol, (ip, port), message.tobytes()))
+        esp = ''
+        if self.establishedSA and dstip == self.remotesa['ip']:
+            esp = '/ESP'
+        log.info("%s:%d --%s%s-> %s:%d\n%s", self.localip, srcport, protocol, esp, dstip, dstport, message)
+        self.messagepipe.send((protocol, srcport, (dstip, dstport), message.tobytes()))
 
     def recv(self, timeout=None):
         if self.messagepipe.poll(timeout):
-            protocol,(ip,port),message = self.messagepipe.recv()
+            protocol,(srcip,srcport),dstport,message = self.messagepipe.recv()
             message = Message.SIPMessage.frombytes(message)
             if message:
                 if isinstance(message, Message.SIPRequest):
                     via = message.header('via')
                     if via:
-                        if via.host != ip:
-                            via.params['received'] = ip
+                        if via.host != srcip:
+                            via.params['received'] = srcip
                         if 'rport' in via.params:
-                            via.params['received'] = ip
-                            via.params['rport'] = port
-                log.info("%s <-%s-- %s:%d\n%s", self, protocol, ip, port, message)
+                            via.params['received'] = srcip
+                            via.params['rport'] = srcport
+                esp = ''
+                if self.establishedSA and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
+                    esp = '/ESP'
+                log.info("%s:%s <-%s%s-- %s:%d\n%s", self.localip, dstport, protocol, esp, srcip, srcport, message)
                 return message
         return None
 
     def prepareSA(self, remoteip):
-        return self.command('sa', 'prepare', self.localip, remoteip)
+        self.localsa = self.command('sa', 'prepare', self.localip, remoteip)
+        self.localsa.pop('ip')
+        return self.localsa
 
     def establishSA(self, **kwargs):
-        self.command('sa', 'establish', kwargs)
+        self.remotesa  = self.command('sa', 'establish', kwargs)
+        self.establishedSA = True
+
+    def terminateSA(self, **kwargs):
+        self.command('sa', 'terminate', kwargs)
+        self.establishedSA = False
+        self.localsa = self.remotesa = None
 
     def run(self):
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -212,9 +250,19 @@ class Transport(multiprocessing.Process):
                         try:
                             if command[1] == 'prepare':
                                 sa = Security.SA(*command[2:])
-                                self.childcommandpipe.send(dict(spis=sa.local.spis, spic=sa.local.spic, ports=sa.local.ports, portc=sa.local.portc,))
+                                local  = dict(ip=sa.local.ip,  spis=sa.local.spis,  spic=sa.local.spic,  ports=sa.local.ports,  portc=sa.local.portc)
+                                self.childcommandpipe.send(local)
                             elif command[1] == 'establish':
                                 sa.finalize(**command[2])
+                                udps.append(sa.udps)
+                                udps.append(sa.udpc)
+                                remote = dict(ip=sa.remote.ip, spis=sa.remote.spis, spic=sa.remote.spic, ports=sa.remote.ports, portc=sa.remote.portc)
+                                self.childcommandpipe.send(remote)
+                            elif command[1] == 'terminate':
+                                udps.remove(sa.udps)
+                                udps.remove(sa.udpc)
+                                sa.terminate()
+                                sa = None
                                 self.childcommandpipe.send(None)
                         except Exception as exc:
                             self.childcommandpipe.send(exc)
@@ -224,19 +272,28 @@ class Transport(multiprocessing.Process):
 
                 # Message comming from upper layer --> send to remote address
                 if obj == self.childmessagepipe:
-                    protocol,remoteaddr,packet = self.childmessagepipe.recv()
+                    protocol,srcport,dstaddr,packet = self.childmessagepipe.recv()
                     try:
+                        sock = None
                         if protocol == 'TCP':
-                            tcpsockets.sendto(packet, remoteaddr)
+                            if sa and sa.state == 'created' and srcport==sa.local.portc:
+                                sock = sa.tcpc
+                            elif sa and sa.state == 'created' and srcport==sa.local.ports:
+                                sock = sa.tcps
+                            elif srcport==localport:
+                                sock = tcpsockets
                         elif protocol == 'UDP':
-                            if sa and sa.state == 'created':
-                                addr = (remoteaddr[0], sa.remote.ports)
-                                sa.udpc.sendto(packet, addr)
-                            else:
-                                udps[0].sendto(packet, remoteaddr)
+                            if sa and sa.state == 'created' and srcport==sa.local.portc:
+                                sock = sa.udpc
+                            elif sa and sa.state == 'created' and srcport==sa.local.ports:
+                                sock = sa.udps
+                            elif srcport==localport:
+                                sock = udps[0]
+                        if sock:
+                            sock.sendto(packet, dstaddr)
                         err = None
                     except Exception as e:
-                        dispatcherror(self.localip, self.localport, *remoteaddr, str(e), packet)
+                        dispatcherror(self.localip, self.localport, *dstaddr, str(e), packet)
                         continue
 
                 # Incomming TCP connection --> new socket added (will be read in the next result of poll)
@@ -251,7 +308,7 @@ class Transport(multiprocessing.Process):
                     if decodeinfo.status != 'OK':
                         continue
                     
-                    self.childmessagepipe.send(('UDP',remoteaddr,packet[decodeinfo.istart:decodeinfo.iend]))
+                    self.childmessagepipe.send(('UDP',remoteaddr,obj.getsockname()[1],packet[decodeinfo.istart:decodeinfo.iend]))
 
                 # Incomming TCP buffer --> assemble with previous buffer(done by ServiceSocket class), decode and send to upper layer
                 else:

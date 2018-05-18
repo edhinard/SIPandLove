@@ -132,6 +132,16 @@ def AKA(nonce, K, OP):
     return RES, IK, CK
 
 
+AUTH_DICT = {
+    'hmac-md5-96'   : 'md5 0x{}',
+    'hmac-sha-1-96' : 'sha1 0x{}'}
+ENC_DICT = {
+    'null'          : 'cipher_null ""',
+    'des-ede3-cbc'  : 'des3_ede 0x{}',
+    'aes-cbc'       : 'aes 0x{}'}
+IPSEC_ALGS = tuple(AUTH_DICT.keys())
+IPSEC_EALGS = tuple(ENC_DICT.keys())
+
 class SA:
 #
 # local ip         |         remote ip
@@ -156,6 +166,8 @@ class SA:
 
     def __init__(self, localip, remoteip):
         self.state = 'finished'
+        self.auth = None
+        self.enc = None
         self.remote = SA.Struct()
         self.remote.ip = remoteip
         
@@ -163,8 +175,24 @@ class SA:
         self.local.ip = localip
         self.local.spic = self.allocspi()
         self.local.spis = self.allocspi()
-        
         self.reserveports()
+
+        self.xfrm('''policy add
+                         src {local.ip} dst 0.0.0.0/0 sport {local.portc}
+                         dir out
+                         tmpl src 0.0.0.0 dst 0.0.0.0/0 proto esp mode transport''')
+        self.xfrm('''policy add
+                         src {local.ip} dst 0.0.0.0/0 sport {local.ports}
+                         dir out
+                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
+        self.xfrm('''policy add
+                         src 0.0.0.0/0 dst {local.ip} dport {local.portc}
+                         dir in
+                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
+        self.xfrm('''policy add
+                         src 0.0.0.0/0 dst {local.ip} dport {local.ports}
+                         dir in
+                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         
         self.state = 'initialized'
 
@@ -178,62 +206,40 @@ class SA:
         self.remote.portc = portc
         self.remote.ports = ports
 
-        self.local.auths  = self.local.authc  = 'md5 0x{}'.format(ik.hex())
-        self.local.encs   = self.local.encc   = 'cipher_null ""'
-        self.remote.auths = self.remote.authc = 'md5 0x{}'.format(ik.hex())
-        self.remote.encs  = self.remote.encc  = 'cipher_null ""'
+        self.auth = AUTH_DICT[alg].format(ik.hex())
+        self.enc = ENC_DICT[ealg].format(ck.hex())
 
-        # SA #1 from local:portc to remote:ports with remote spis
-        self.remote.reqids = self.newreqid()
-        self.xfrm('''state  add
-                         src {local.ip} dst {remote.ip} proto esp spi {remote.spis} 
-                         mode transport auth {remote.auths} enc {remote.encs}
-                         reqid {remote.reqids}
-                         replay-window 32''')
-        self.xfrm('''policy add
-                         src {local.ip} dst {remote.ip} sport {local.portc} dport {remote.ports}
-                         dir out
-                         tmpl src {local.ip} dst {remote.ip} proto esp mode transport
-                         reqid {remote.reqids}''')
+        # SA #1 from local portc to remote ports with remote spis
+        self.xfrm('''state add
+                         src {local.ip} dst {remote.ip}
+                         proto esp spi {remote.spis} mode transport
+                         replay-window 32
+                         auth {auth} enc {enc}
+                         sel src {local.ip} dst {remote.ip} sport {local.portc} dport {remote.ports}''')
         
-        # SA #2 from remote:ports to local:portc with local spic
-        self.local.reqidc = self.newreqid()
-        self.xfrm('''state  update 
-                         src {remote.ip} dst {local.ip} proto esp spi {local.spic}
-                         mode transport auth {local.authc} enc {local.encc}
-                         reqid {local.reqidc}
-                         replay-window 32''')
-        self.xfrm('''policy add 
-                         src {remote.ip} dst {local.ip} sport {remote.ports} dport {local.portc}
-                         dir in
-                         tmpl src {remote.ip} dst {local.ip} proto esp mode transport
-                         reqid {local.reqidc}''')
+        # SA #2 from remote ports to local portc with local spic
+        self.xfrm('''state update
+                         src {remote.ip} dst {local.ip}
+                         proto esp spi {local.spic} mode transport
+                         replay-window 32
+                         auth {auth} enc {enc}
+                         sel src {remote.ip} dst {local.ip} sport {remote.ports} dport {local.portc}''')
         
-        # SA #3 from local:ports to remote:portc with remote spic
-        self.remote.reqidc = self.newreqid()
-        self.xfrm('''state  add 
-                         src {local.ip} dst {remote.ip} proto esp spi {remote.spic}
-                         mode transport auth {remote.authc} enc {remote.encc}
-                         reqid {remote.reqidc}
-                         replay-window 32''')
-        self.xfrm('''policy add
-                         src {local.ip} dst {remote.ip} sport {local.ports} dport {remote.portc}
-                         dir out
-                         tmpl src {local.ip} dst {remote.ip} proto esp mode transport
-                         reqid {remote.reqidc}''')
+        # SA #3 from local ports to remote portc with remote spic
+        self.xfrm('''state add
+                         src {local.ip} dst {remote.ip}
+                         proto esp spi {remote.spic} mode transport
+                         replay-window 32
+                         auth {auth} enc {enc}
+                         sel src {local.ip} dst {remote.ip} sport {local.ports} dport {remote.portc}''')
 
-        # SA #4 from remote:ports to local:portc with local spis
-        self.local.reqids = self.newreqid()
-        self.xfrm('''state  update
-                         src {remote.ip} dst {local.ip} proto esp spi {local.spis}
-                         mode transport auth {local.auths} enc {local.encs}
-                         reqid {local.reqids}
-                         replay-window 32''')
-        self.xfrm('''policy add
-                         src {remote.ip} dst {local.ip} sport {remote.portc} dport {local.ports}
-                         dir in
-                         tmpl src {remote.ip} dst {local.ip} proto esp mode transport
-                         reqid {local.reqids}''')
+        # SA #4 from remote portc to local ports with local spis
+        self.xfrm('''state update
+                         src {remote.ip} dst {local.ip}
+                         proto esp spi {local.spis} mode transport
+                         replay-window 32
+                         auth {auth} enc {enc}
+                         sel src {remote.ip} dst {local.ip} sport {remote.portc} dport {local.ports}''')
 
         self.state = 'created'
 
@@ -242,22 +248,23 @@ class SA:
         if self.state == 'finished':
             return
 
+        # flush SPDB
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.portc} dir out''')
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} dir out''')
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} dir in''')
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} dir in''')
+
         if self.state == 'initialized':
             # free pre-allocated SPI
             self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spic}''')
             self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spis}''')
-            
+
         elif self.state == 'created':
-            # flush SADB and SPDB
+            # flush SADB
             self.xfrm('''state del src {local.ip} dst {remote.ip} proto esp spi {remote.spis}''')
             self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spic}''')
             self.xfrm('''state del src {local.ip} dst {remote.ip} proto esp spi {remote.spic}''')
             self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spis}''')
-            
-            self.xfrm('''policy del src {local.ip} dst {remote.ip} sport {local.portc} dport {remote.ports} dir out''')
-            self.xfrm('''policy del src {remote.ip} dst {local.ip} sport {remote.ports} dport {local.portc} dir in''')
-            self.xfrm('''policy del src {local.ip} dst {remote.ip} sport {local.ports} dport {remote.portc} dir out''')
-            self.xfrm('''policy del src {remote.ip} dst {local.ip} sport {remote.portc} dport {local.ports} dir in''')
 
         # close sockets
         self.tcpc.close()
@@ -269,7 +276,7 @@ class SA:
 
 
     def xfrm(self, cmd):
-        cmd = ['ip', 'xfrm'] + cmd.format(local=self.local, remote=self.remote).split()
+        cmd = ['ip', 'xfrm'] + cmd.format(local=self.local, remote=self.remote, auth=self.auth, enc=self.enc).split()
         p = subprocess.Popen([a.strip('"') for a in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out,err = p.communicate()
         log.info("%s --> %d", ' '.join(cmd), p.returncode)
@@ -286,15 +293,6 @@ class SA:
             return int(m.group(1), 16)
         else:
             raise Exception("cannot allocate SPI")
-
-
-    def newreqid(self):
-        while True:
-            reqid = random.getrandbits(32)
-            resp = self.xfrm('state list reqid {}'.format(reqid))
-            if not resp:
-                break
-        return reqid
 
 
     def reserveports(self):

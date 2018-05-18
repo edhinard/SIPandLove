@@ -148,6 +148,12 @@ class SIPMessage(object):
     def headers(self, *names):
         return self._headers.list(*names)
 
+    def removeheaders(self, *names):
+        for name in names:
+            while True:
+                if self.popheader(name) is None:
+                    break
+
     def header(self, name):
         return self._headers.first(name)
 
@@ -160,9 +166,10 @@ class SIPMessage(object):
             return cl.length
     def _setlength(self, length):
         cl = self.header('Content-Length')
-        if not cl:
-            raise Exception("missing Content-Length header")
-        cl.length = length
+        if cl:
+            cl.length = length
+        else:
+            self.addheaders(Header.Content_Length(length=length))
     length = property(_getlength, _setlength)
 
     def _getbranch(self):
@@ -175,8 +182,6 @@ class SIPMessage(object):
             raise Exception("missing Via header")
         via.params['branch'] = branch
     branch = property(_getbranch, _setbranch)
-    def newbranch(self, tag=None):
-        self.branch = Tags.branch(tag)
 
     def _getfromtag(self):
         f = self.header('From')
@@ -195,9 +200,10 @@ class SIPMessage(object):
             return f.address
     def _setfromaddr(self, addr):
         f = self.header('From')
-        if not f:
-            raise Exception("missing From header")
-        f.address = addr
+        if f:
+            f.address = addr
+        else:
+            self.addheaders(Header.From(display=None, address=addr, params=None))
     fromaddr = property(_getfromaddr, _setfromaddr)
 
     def _gettotag(self):
@@ -217,9 +223,10 @@ class SIPMessage(object):
             return t.address
     def _settoaddr(self, addr):
         t = self.header('To')
-        if not t:
-            raise Exception("missing To header")
-        t.address = addr
+        if t:
+            t.address = addr
+        else:
+            self.addheaders(Header.To(display=None, address=addr, params=None))
     toaddr = property(_gettoaddr, _settoaddr)
 
     def _getcontactaddr(self):
@@ -228,9 +235,10 @@ class SIPMessage(object):
             return c.address
     def _setcontactaddr(self, addr):
         c = self.header('Contact')
-        if not c:
-            raise Exception("missing Contact header")
-        c.address = addr
+        if c:
+            c.address = addr
+        else:
+            self.addheaders(Header.Contact(display=None, address=addr, params=None))
     contactaddr = property(_getcontactaddr, _setcontactaddr)
 
     def _getcallid(self):
@@ -239,9 +247,10 @@ class SIPMessage(object):
             return c.callid
     def _setcallid(self, cid):
         c = self.header('Call-Id')
-        if not c:
-            raise Exception("missing Call-Id header")
-        c.callid = cid
+        if c:
+            c.callid = cid
+        else:
+            self.addheaders(Header.Call_ID(callid=cid))
     callid = property(_getcallid, _setcallid)
 
     def _getseq(self):
@@ -250,9 +259,10 @@ class SIPMessage(object):
             return c.seq
     def _setseq(self, seq):
         c = self.header('CSeq')
-        if not c:
-            raise Exception("missing Cseq header")
-        c.seq = seq
+        if c:
+            c.seq = seq
+        else:
+           self.addheaders(Header.Cseq(seq=seq, method=self.METHOD))
     seq = property(_getseq, _setseq)
 
     @property
@@ -323,13 +333,12 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             Header.From(display=None, address=self.uri, params={}),
             Header.To(display=None, address=self.uri, params={}),
             Header.Max_Forwards(max=70),
-            Header.Call_ID(callid=Tags.callid()),
             Header.CSeq(seq=random.randint(0,0x7fff), method=self.METHOD),
             ifmissing=True
         )
-
-        if self.branch is None:
-            self.newbranch()
+        self.branch = Tags.branch()
+        if self.callid is None:
+            self.callid = Tags.callid()
         if self.fromtag is None:
             self.fromtag = Tags.fromto()
 
