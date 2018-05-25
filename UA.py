@@ -148,7 +148,7 @@ class AuthenticationMixin:
                         self.savedproxy = self.proxy
                         self.proxy = (Transport.splitaddr(self.proxy)[0], securityserverparams['ports'])
                         self.contacturi.port = self.sa['ports']
-                        message.contactaddr.port = self.sa['ports']
+                        message.contacturi.port = self.sa['ports']
                     message.addheaders(auth.header, replace=True)
                     message.seq = message.seq + 1
                     yield from super().sendmessage(message)

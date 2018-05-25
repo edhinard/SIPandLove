@@ -229,17 +229,17 @@ class SIPMessage(object):
             self.addheaders(Header.To(display=None, address=addr, params=None))
     toaddr = property(_gettoaddr, _settoaddr)
 
-    def _getcontactaddr(self):
+    def _getcontacturi(self):
         c = self.header('Contact')
         if c:
             return c.address
-    def _setcontactaddr(self, addr):
+    def _setcontacturi(self, uri):
         c = self.header('Contact')
         if c:
-            c.address = addr
+            c.address = uri
         else:
-            self.addheaders(Header.Contact(display=None, address=addr, params=None))
-    contactaddr = property(_getcontactaddr, _setcontactaddr)
+            self.addheaders(Header.Contact(display=None, address=uri, params=None))
+    contacturi = property(_getcontacturi, _setcontacturi)
 
     def _getcallid(self):
         c = self.header('Call-Id')
@@ -436,7 +436,7 @@ class INVITE(SIPRequest):
     def ack(self, response):
         if response.familycode == 1:
             raise ValueError("cannot build an ACK from a 1xx response")
-        uri = response.contactaddr if response.familycode == 2 else self.uri
+        uri = response.contacturi if response.familycode == 2 else self.uri
         ack = ACK(uri, *self.headers('from', 'cseq', 'call-id', 'via'), response.header('to'))
         ack.header('CSeq').method = 'ACK'
         return ack

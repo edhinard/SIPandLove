@@ -26,7 +26,7 @@ class Dialog:
             raise ValueError("uac xor uas must be True")
         self.callid = request.callid
         if uac:
-            self.remotetarget = response.contactaddr
+            self.remotetarget = response.contacturi
             self.localuri     = request.fromaddr
             self.localtag     = request.fromtag
             self.localseq     = request.seq
@@ -34,7 +34,7 @@ class Dialog:
             self.remotetag    = response.totag
             self.remoteseq    = None
         if uas:
-            self.remotetarget = request.contactaddr
+            self.remotetarget = request.contacturi
             self.localuri     = response.toaddr
             self.localtag     = response.totag
             self.localseq     = random.randint(0,0x7fff)

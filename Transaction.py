@@ -13,11 +13,9 @@ from . import Transport
 class TransactionManager(threading.Thread):
     def __init__(self, transport, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
-        if isinstance(transport, Transport.Transport):
-            self.transport = transport
-        else:
-            self.transport = Transport.Transport(transport)
-        self.transport.errorcb = self.transporterror
+        if isinstance(transport, str):
+            transport = dict(listenpoint=transport)
+        self.transport = Transport.Transport(**transport, errorcb=self.transporterror)
         self.T1 = T1 or .5
         self.T2 = T2 or 4.
         self.T4 = T4 or 5.

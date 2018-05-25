@@ -94,6 +94,11 @@ class ParameterDict:
         except KeyError:
             return default
 
+    def pop(self, key, default=None):
+        """If key is in the dictionary, remove it and return its value, else return default."""
+        k = key.lower()
+        return self._dict.pop(k, default)
+
     def setdefault(self, key, default):
         """If 'key' doesn't exists, associate it with the 'default' value.
         Return value associated with 'key'."""
