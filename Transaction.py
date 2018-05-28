@@ -9,6 +9,8 @@ log = logging.getLogger('Transaction')
 from . import Message
 from . import Timer
 from . import Transport
+from . import Dialog
+from . import Tags
 
 class TransactionManager(threading.Thread):
     def __init__(self, transport, T1=None, T2=None, T4=None):
@@ -21,6 +23,7 @@ class TransactionManager(threading.Thread):
         self.T4 = T4 or 5.
         self.lock = threading.Lock()
         self.transactions = []
+        self.ackwaiter = ACKWaiter(self.transport, self.T1, self.T2)
         self.allow = set()
         for attr in dir(self):
             if attr.endswith('_handler'):
@@ -90,15 +93,6 @@ class TransactionManager(threading.Thread):
                     newtransaction = ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
                     with self.lock:
                         self.transactions.append(newtransaction)
-                if isinstance(transaction, INVITEserverTransaction) \
-                   and transaction.lastresponse \
-                   and transaction.lastresponse.familycode == 2:
-                    response = transaction.lastresponse
-                    newtransaction = ACKserverTransaction(invite, self.transport, response2xx=response, T1=self.T1, T2=self.T2, T4=self.T4)
-                    XXXXXX_invite_XXXXXX
-                    with self.lock:
-                        self.transactions.append(newtransaction)
-
             else:
                 if isinstance(message, Message.SIPResponse):
                     pass
@@ -115,15 +109,71 @@ class TransactionManager(threading.Thread):
                     else:
                         Handler(self, handler, transaction, message)
                 else:
-                    pass
+                    ack = message
+                    self.ackwaiter.arrived(ack)
 
             with self.lock:
                 self.transactions = [transaction for transaction in self.transactions if not transaction.terminated]
+
+class ACKWaiter():
+    # Class responsible for 200-OK (on INVITE) retransmission until ACK is received
+    def __init__(self, transport, T1, T2):
+        self.transport = transport
+        self.T1 = T1
+        self.initialcounter = 0
+        while 2**(self.initialcounter+1) - 1 < T2/self.T1:
+            self.initialcounter += 1
+        self.responses = {}
+        self.lock = threading.Lock()
+
+    def new(self, inviteokresponse):
+        # A 200 OK response to an INVITE was just send
+        #  * keep it indexed by dialog ID
+        #  * arm a T1 timer to send it again
+        dialogid = Dialog.UASid(inviteokresponse)
+        with self.lock:
+            self.responses[dialogid] = inviteokresponse
+
+        if self.initialcounter:
+            Timer.arm(self.T1, self.resend, **dict(dialogid=dialogid, delay=self.T1, counter=self.initialcounter))
+
+    def arrived(self, ack):
+        # An ACK has arrived
+        #  * find the associated response and forget it
+        dialogid = Dialog.UASid(ack)
+        with self.lock:
+            response = self.responses.pop(dialogid, None)
+
+    def resend(self, dialogid, delay, counter):
+        # It is time to send the response again
+        #  * find the associated response
+        #  * if absent (the ACK already arrived or we already give up)
+        #       * do nothing
+        #    else (the response is still here)
+        #       * send the response again
+        #       * if it is enough
+        #            * give up i.e. forget the response
+        #         else
+        #            * arm another timer with double delay
+        with self.lock:
+            response = self.responses.get(dialogid)
+
+        if response:
+            self.transport.send(response)
+
+            delay *= 2
+            counter -= 1
+            if counter:
+                Timer.arm(delay, self.resend, **dict(dialogid=dialogid, delay=delay, counter=counter))
+            else:
+                with self.lock:
+                    self.responses.pop(dialogid, None)
 
 
 class Handler(threading.Thread):
     def __init__(self, transactionmanager, handler, transaction, request):
         threading.Thread.__init__(self, daemon=True)
+        self.transactionmanager = transactionmanager
         self.allow = transactionmanager.allow
         self.handler = handler
         self.transaction = transaction
@@ -138,6 +188,8 @@ class Handler(threading.Thread):
                     ifmissing=True
                 )
             self.transaction.eventmessage(response)
+            if isinstance(self.request, Message.INVITE) and response.familycode == 2:
+                self.transactionmanager.ackwaiter.new(response)
 
 class Timeout(Exception):
     def __init__(self, timer):
@@ -394,8 +446,15 @@ class INVITEclientTransaction(ClientTransaction):
 #                         |           |
 #                         +-----------+
 class ACKclientTransaction(ClientTransaction):
+    @staticmethod
+    def identifier(message):
+        ident = ClientTransaction.identifier(message)
+        if ident[-1] == 'INVITE':
+            return (*ident[:-1], 'ACK')
+        return ident
     state = 'Proceeding'
     def init(self):
+        self.request.branch = Tags.branch()
         self.transport.send(self.request, self.addr)
         self.armtimer('B', 64*self.T1)
 
@@ -603,50 +662,6 @@ class INVITEserverTransaction(ServerTransaction):
 
     def Confirmed_TimerI(self):
         self.state = 'Terminated'
-
-#                               |INVITE + 2xx
-#                               |
-#                               V       Timer G fires
-#                         +-----------+ send 2xx
-#                         |           |--------+
-#                         | Completed |        |
-#                         |           |<-------+
-#                         +-----------+
-#                            |     |
-#                        ACK |     |  Timer H fires
-#                        -   |     |  -
-#                            V     V 
-#                         +-----------+
-#                         |           |
-#                         | Terminated|
-#                         |           |
-#                         +-----------+
-
-class ACKserverTransaction(ServerTransaction):
-    def __init__(self, *args, response2xx, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.lastresponse = response2xx
-
-    state = 'Completed'
-    def init(self):
-        self.Gduration = self.T1
-        self.armtimer('G', self.Gduration)
-        self.armtimer('H', 64*self.T1)
-
-    def Completed_TimerG(self):
-        self.transport.send(self.lastresponse)
-        self.Gduration = min(2*self.Gduration, self.T2)
-        self.armtimer('G', self.Gduration)
-
-    def Completed_TimerH(self):
-        self.state = 'Terminated'
-
-    def Completed_Request(self):
-        if self.lastrequest.METHOD == 'ACK':
-            self.state = 'Terminated'
-        else:
-            log.warning("%s expecting ACK. Request ignored", self)
-
 
 #                                  |Request received
 #                                  |pass to TU

@@ -212,6 +212,7 @@ class Transport(multiprocessing.Process):
                         addr = None
                     elif protocol == 'UDP':
                         fd = self.mainudp
+                        srcport = self.localport
                         addr = (dstip, dstport)
 
         log.info("%s:%d --%s-> %s:%d\n%s", self.localip, srcport, protocol, dstip, dstport, message)
@@ -328,7 +329,7 @@ class Transport(multiprocessing.Process):
                             sockets = clientsockets
                         elif direction == 'server':
                             sockets = serversockets
-                        sock = sockets.byaddr.get(remoteaddr)
+                        sock = sockets.get(remoteaddr)
                         if sock:
                             self.childcommandpipe.send((sock.fileno(), sock.getsockname()[1]))
                         else:
@@ -372,8 +373,8 @@ class Transport(multiprocessing.Process):
                 # Message comming from main process --> send to remote address
                 elif obj == self.childmessagepipe:
                     fd,remoteaddr,packet = self.childmessagepipe.recv()
-                    sock = clientsockets.byfd.get(fd, serversockets.byfd.get(fd, [mainudp]))[0]
-                    if not sock:
+                    sock = clientsockets.get(fd, serversockets.get(fd, mainudp))
+                    if sock.fileno() != fd:
                         continue
                     try:
                         if remoteaddr:
@@ -436,17 +437,17 @@ class ServiceSockets:
         self.byfd[sock.fileno()] = newitem
         self.byaddr[addr] = newitem
 
+    def get(self, fdoraddr, default=None):
+        if isinstance(fdoraddr, int):
+            return self.byfd.get(fdoraddr, [default])[0]
+        return self.byaddr.get(fdoraddr, [default])[0]
+
     def __iter__(self):
         for value in self.byfd.values():
             yield value[0]
 
     def __contains__(self, sock):
         return sock.fileno() in self.byfd
-
-    def sendto(self, packet, addr):
-        sock,addr,buf,lasttime = self.byaddr[addr]
-        lasttime[0] = time.monotonic()
-        sock.send(packet)
 
     def recvfrom(self, sock):
         sock,addr,buf,lasttime = self.byfd[sock.fileno()]
@@ -457,21 +458,25 @@ class ServiceSockets:
         buf += newbuf
         return buf,addr
 
-    def delete(self, sock):
-        sock,addr,buf,lasttime = self.byfd[sock.fileno()]
+    def delete(self, fdorsock):
+        if isinstance(fdorsock, int):
+            fd = fdorsock
+        else:
+            fd = fdorsock.fileno()
+        sock,addr,buf,lasttime = self.byfd[fd]
         try:
             sock.close()
         except:
             pass
-        del self.byfd[sock.fileno()]
+        del self.byfd[fd]
         del self.byaddr[addr]
 
     def cleanup(self):
         # TCP socket that are idle for more than 64*T1 sec are closed [18]
         currenttime = time.monotonic()
-        for sock,(s,addr,buf,lasttime) in list(self.byfd.items()):
+        for fd,(sock,addr,buf,lasttime) in list(self.byfd.items()):
             if currenttime - lasttime[0] > self.TIMEOUT:
-                self.delete(sock)
+                self.delete(fd)
 
 
 class ErrorDispatcher(threading.Thread):
