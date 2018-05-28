@@ -115,15 +115,16 @@ class Transport(multiprocessing.Process):
     def send(self, message, addr=None):
         assert isinstance(message, Message.SIPMessage)
 
+        if message.contacturi:
+            if self.protocol == 'UDP+TCP':
+                message.contacturi.params.pop('transport', None)
+            else:
+                message.contacturi.params['transport'] = self.protocol
+
         if isinstance(message, Message.SIPRequest):
             assert addr
             dstip,dstport = splitaddr(addr)
             protocol = self.protocol
-            if message.contacturi:
-                if protocol == 'UDP+TCP':
-                    message.contacturi.params.pop('transport', None)
-                else:
-                    message.contacturi.params['transport'] = protocol
             if protocol == 'TLS':
                 dstport = dstport or 5061
                 message.length = len(message.body)
@@ -151,9 +152,10 @@ class Transport(multiprocessing.Process):
                     protocol = '{}/ESP'.format(protocol)
                 else:
                     if protocol == 'TCP':
-                        fd,srcport = self.getclienttcpsocket(dstip, dstport)
+                        fd,truesrcport = self.getclienttcpsocket(dstip, dstport)
                         if fd == -1:
-                            fd,srcport = self.newtcp(dstip, dstport)
+                            fd,truesrcport = self.newtcp(dstip, dstport)
+                        srcport = self.localport
                         addr = None
                     elif protocol == 'UDP':
                         fd = self.mainudp
@@ -165,6 +167,11 @@ class Transport(multiprocessing.Process):
                     via.protocol = protocol[:3]
                     via.host = self.localip
                     via.port = srcport if srcport!=5060 else None
+
+                try:
+                    srcport = truesrcport
+                except:
+                    pass
 
         elif isinstance(message, Message.SIPResponse):
             via = message.header('via')
@@ -206,7 +213,10 @@ class Transport(multiprocessing.Process):
                     protocol = '{}/ESP'.format(protocol)
                 else:
                     if protocol == 'TCP':
-                        fd,srcport = self.getservertcpsocket(dstip, dstport)
+                        if message.fd:
+                            fd,srcport = message.fd,self.localport
+                        else:
+                            fd,srcport = self.getservertcpsocket(dstip, dstport)
                         if fd == -1:
                             raise Exception("{} is not an existing server address".format((dstip, dstport)))
                         addr = None
@@ -220,9 +230,10 @@ class Transport(multiprocessing.Process):
 
     def recv(self, timeout=None):
         if self.messagepipe.poll(timeout):
-            protocol,(srcip,srcport),dstport,message = self.messagepipe.recv()
+            fd,protocol,(srcip,srcport),dstport,message = self.messagepipe.recv()
             message = Message.SIPMessage.frombytes(message)
             if message:
+                message.fd = fd
                 if isinstance(message, Message.SIPRequest):
                     via = message.header('via')
                     if via:
@@ -396,7 +407,7 @@ class Transport(multiprocessing.Process):
                     if decodeinfo.status != 'OK':
                         continue
                     
-                    self.childmessagepipe.send(('UDP',remoteaddr,obj.getsockname()[1],packet[decodeinfo.istart:decodeinfo.iend]))
+                    self.childmessagepipe.send((obj.fileno(), 'UDP',remoteaddr,obj.getsockname()[1],packet[decodeinfo.istart:decodeinfo.iend]))
 
                 # Incomming TCP buffer --> assemble with previous buffer(done by ServiceSocket class), decode and send to main process
                 else:
@@ -419,7 +430,7 @@ class Transport(multiprocessing.Process):
                         if decodeinfo.status != 'OK':
                             break
 
-                        self.childmessagepipe.send(('TCP',remoteaddr,obj.getsockname()[1],buf[decodeinfo.istart:decodeinfo.iend]))
+                        self.childmessagepipe.send((obj.fileno(), 'TCP',remoteaddr,obj.getsockname()[1],buf[decodeinfo.istart:decodeinfo.iend]))
                         del buf[:decodeinfo.iend]
                             
             clientsockets.cleanup()

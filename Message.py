@@ -122,6 +122,7 @@ class SIPMessage(object):
     def __init__(self, *headers, body):
         self.setbody(body)
         self._headers = Header.Headers(*headers)
+        self.fd = -1
 
     def setbody(self, body, contenttype=None):
         if body is None:
@@ -424,6 +425,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                            body=body,
                            reason=reason,
                            **kw)
+        resp.fd = self.fd
         if code != 100 and resp.totag is None:
             if self.responsetotag is None:
                 self.responsetotag = Tags.fromto()
