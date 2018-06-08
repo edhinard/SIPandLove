@@ -16,6 +16,7 @@ from . import Timer
 from . import Dialog
 from . import Security
 from . import Transport
+from . import Utils
 
 class UAbase(Transaction.TransactionManager):
     def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None):
@@ -58,7 +59,7 @@ class UAbase(Transaction.TransactionManager):
                 return
             result = UAbase.Result(event)
             yield result
-            if not result.provisional:
+            if result.provisional is None:
                 return
 
     def options(self):
@@ -79,95 +80,14 @@ class UAbase(Transaction.TransactionManager):
             elif result.exception:
                 log.info("%s querying failed: %s", self, result.exception)
 
+UAfeatures = Utils.ParameterDict() # ordered and case-insensitive keys
+class Mixin(type):
+    def __new__(cls, name, bases, namespace, **kwds):
+        mixin = type.__new__(cls, name, bases, namespace)
+        UAfeatures[name] = mixin
+        return mixin
 
-class CancelationMixin:
-    def CANCEL_handler(self, cancel):
-        transaction = self.transactionmatching(cancel, matchonbranch=True)
-        if transaction:
-            log.info("%s canceled by %s", self, cancel.fromaddr)
-            resp = cancel.response(200)
-            totag = transaction.eventcancel()
-            if totag:
-                resp.totag = totag
-            return resp
-
-        log.info("%s invalid cancelation from %s", self, cancel.fromaddr)
-        return cancel.response(481)
-
-
-class AuthenticationMixin:
-    def __init__(self, credentials=None, **kwargs):
-        super().__init__(**kwargs)
-        self.credentials = credentials
-        self.sa = None
-        self.savedproxy = None
-    def sendmessage(self, message):
-#        message.removeheaders('security-client')
-        needsecurity = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
-        if needsecurity and self.sa is None:
-            username = self.credentials.get('username')
-            uri = self.credentials.get('uri', self.domain)
-            realm = self.credentials.get('realm', username.partition('@')[2])
-            message.addheaders(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
-            self.sa = self.transport.prepareSA(Transport.splitaddr(self.proxy)[0])
-            for alg in Security.IPSEC_ALGS:
-                for ealg in Security.IPSEC_EALGS:
-                    message.addheaders(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
-        for result in super().sendmessage(message):
-            if result.error and result.error.code in (401, 407):
-                if needsecurity:
-                    bestq = -1
-                    for sec in result.error.headers('security-server'):
-                        q = sec.params.get('q',0.)
-                        prot = sec.params.get('prot','esp')
-                        mod = sec.params.get('mod','trans')
-                        try:
-                            params = {k:sec.params[k] for k in ('spic', 'spis', 'portc', 'ports', 'alg')}
-                        except:
-                            continue # missing mandatory parameter
-                        params['ealg'] = sec.params.get('ealg', 'null')
-                        if sec.mechanism=='ipsec-3gpp' and prot=='esp' and mod=='trans' and params['ealg'] in Security.IPSEC_EALGS and params['alg'] in Security.IPSEC_ALGS and q>bestq:
-                            bestq = q
-                            securityserverparams = params
-                    if bestq == -1:
-                        log.warning("%s no matching algorithm found for SA", self)
-                        yield result
-                if self.credentials is None:
-                    log.warning("%s no credential provided at initialization", self)
-                    yield result
-                else:
-                    log.info("%s %d retrying %s with authentication", self, result.error.code, message.METHOD)
-                    auth = message.authenticationheader(result.error, **self.credentials)
-                    if auth.header is None:
-                        yield UAbase.Result(Exception(auth.error))
-                        return
-                    if needsecurity:
-                        self.transport.establishSA(**securityserverparams, **auth.extra)
-                        for sec in result.error.headers('security-server'):
-                            message.addheaders(Header.Security_Verify(**dict(sec)))
-                        self.savedproxy = self.proxy
-                        self.proxy = (Transport.splitaddr(self.proxy)[0], securityserverparams['ports'])
-                        self.contacturi.port = self.sa['ports']
-                        message.contacturi.port = self.sa['ports']
-                    message.addheaders(auth.header, replace=True)
-                    message.seq = message.seq + 1
-                    yield from super().sendmessage(message)
-                    return
-            else:
-                yield result
-
-    def _register(self, expires=3600, *headers):
-        registered = super()._register(expires, *headers)
-        if not registered and self.sa:
-            self.transport.terminateSA()
-            self.sa = None
-            if self.savedproxy:
-                self.proxy = self.savedproxy
-                self.savedproxy = None
-            self.contacturi.port = self.transport.localport
-        return registered
-
-class RegistrationMixin:
+class Registration(metaclass=Mixin):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.registermessage = None
@@ -199,7 +119,8 @@ class RegistrationMixin:
             self.registermessage.seq += 1
         self.registermessage.addheaders(Header.Expires(delta=expires), replace=True)
         for result in self.sendmessage(self.registermessage):
-            if result.success:
+            if result.success is not None:
+                gotexpires = 0
                 expiresheader = result.success.header('Expires')
                 if expiresheader:
                     gotexpires = expiresheader.delta
@@ -212,9 +133,9 @@ class RegistrationMixin:
                 else:
                     self.registermessage = None
                     log.info("%s unregistered", self)
-                return self.registermessage is not None
+                return result.success
 
-            elif result.error:
+            elif result.error is not None:
                 if result.error.code == 423:
                     minexpires = result.error.header('Min-Expires')
                     log.info("%s registering failed: %s %s, %r", self, result.error.code, result.error.reason, minexpires)
@@ -222,7 +143,7 @@ class RegistrationMixin:
                         return self.register(minexpires.delta, *headers)
                 self.registermessage = None
                 log.info("%s registering failed: %s %s", self, result.error.code, result.error.reason)
-                return False
+                return result.error
 
             elif result.provisional:
                 pass
@@ -230,10 +151,88 @@ class RegistrationMixin:
             elif result.exception:
                 self.registermessage = None
                 log.info("%s registering failed: %s", self, result.exception)
-                return False
+                return None
 
 
-class SessionMixin:
+class Authentication(metaclass=Mixin):
+    def __init__(self, credentials=None, **kwargs):
+        super().__init__(**kwargs)
+        self.credentials = credentials
+        self.sa = None
+        self.savedproxy = None
+        self.extraheaders = []
+    def sendmessage(self, message):
+#        message.removeheaders('security-client')
+        needsecurity = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
+        if needsecurity and self.sa is None:
+            username = self.credentials.get('username')
+            uri = self.credentials.get('uri', self.domain)
+            realm = self.credentials.get('realm', username.partition('@')[2])
+            #message.addheaders(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
+            self.extraheaders.append(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
+            self.sa = self.transport.prepareSA(Transport.splitaddr(self.proxy)[0])
+            for alg in Security.IPSEC_ALGS:
+                for ealg in Security.IPSEC_EALGS:
+                    #message.addheaders(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
+                    self.extraheaders.append(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
+        message.addheaders(*self.extraheaders, replace=True)
+        for result in super().sendmessage(message):
+            if result.error is not None and result.error.code in (401, 407):
+                if needsecurity:
+                    bestq = -1
+                    for sec in result.error.headers('security-server'):
+                        q = sec.params.get('q',0.)
+                        prot = sec.params.get('prot','esp')
+                        mod = sec.params.get('mod','trans')
+                        try:
+                            params = {k:sec.params[k] for k in ('spic', 'spis', 'portc', 'ports', 'alg')}
+                        except:
+                            continue # missing mandatory parameter
+                        params['ealg'] = sec.params.get('ealg', 'null')
+                        if sec.mechanism=='ipsec-3gpp' and prot=='esp' and mod=='trans' and params['ealg'] in Security.IPSEC_EALGS and params['alg'] in Security.IPSEC_ALGS and q>bestq:
+                            bestq = q
+                            securityserverparams = params
+                    if bestq == -1:
+                        log.warning("%s no matching algorithm found for SA", self)
+                        yield result
+                if self.credentials is None:
+                    log.warning("%s no credential provided at initialization", self)
+                    yield result
+                else:
+                    log.info("%s %d retrying %s with authentication", self, result.error.code, message.METHOD)
+                    auth = message.authenticationheader(result.error, **self.credentials)
+                    if auth.header is None:
+                        yield UAbase.Result(Exception(auth.error))
+                        return
+                    if needsecurity:
+                        self.transport.establishSA(**securityserverparams, **auth.extra)
+                        for sec in result.error.headers('security-server'):
+                            verify = Header.Security_Verify(**dict(sec))
+                            message.addheaders(verify)
+                            self.extraheaders.append(verify)
+                        self.savedproxy = self.proxy
+                        self.proxy = (Transport.splitaddr(self.proxy)[0], securityserverparams['ports'])
+                        self.contacturi.port = self.sa['ports']
+                        message.contacturi.port = self.sa['ports']
+                    message.addheaders(auth.header, replace=True)
+                    message.seq = message.seq + 1
+                    yield from super().sendmessage(message)
+                    return
+            else:
+                yield result
+
+    def _register(self, expires=3600, *headers):
+        registered = super()._register(expires, *headers)
+        if not registered and self.sa:
+            self.transport.terminateSA()
+            self.sa = None
+            if self.savedproxy:
+                self.proxy = self.savedproxy
+                self.savedproxy = None
+            self.contacturi.port = self.transport.localport
+        return registered
+
+class Session(metaclass=Mixin):
     def __init__(self, mediaclass=Media.Media, mediaargs={}, **kwargs):
         super().__init__(**kwargs)
         self.mediaclass = mediaclass
@@ -274,7 +273,7 @@ class SessionMixin:
         invite.setbody(*media.getlocaloffer())
         log.info("%s inviting %s", self, touri)
         for result in self.sendmessage(invite):
-            if result.success:
+            if result.success is not None:
                 log.info("%s invitation ok", self)
                 session = Dialog.Session(invite, result.success, uac=True)
                 self.addsession(session, media)
@@ -289,14 +288,14 @@ class SessionMixin:
                     self.bye(session)
                     return
 
-            elif result.error:
+            elif result.error is not None:
                 log.info("%s invitation failed: %s %s", self, result.error.code, result.error.reason)
                 return
 
-            elif result.provisional:
+            elif result.provisional is not None:
                 pass
 
-            elif result.exception:
+            elif result.exception is not None:
                 log.info("%s invitation failed: %s", self, result.exception)
                 return
 
@@ -378,19 +377,42 @@ class SessionMixin:
         media.stop()
         return bye.response(200)
 
-def addmixin(cls, *mixins):
-    for mixin in mixins:
+
+class Cancelation(metaclass=Mixin):
+    def CANCEL_handler(self, cancel):
+        transaction = self.transactionmatching(cancel, matchonbranch=True)
+        if transaction:
+            log.info("%s canceled by %s", self, cancel.fromaddr)
+            resp = cancel.response(200)
+            totag = transaction.eventcancel()
+            if totag:
+                resp.totag = totag
+            return resp
+
+        log.info("%s invalid cancelation from %s", self, cancel.fromaddr)
+        return cancel.response(481)
+
+
+def SIPPhoneClass(features=UAfeatures.keys(), extensions=[]):
+    if 'sec-agree' in extensions and not Security.SEC_AGREE:
+        raise Exception('sec-agree is not possible. try to run script as root')
+    ext = extensions
+
+    if isinstance(features, str):
+        features = features.replace(',', ' ').split()
+    class cls(UAbase):
+        extensions = ext
+    for feature in features:
+        if isinstance(feature, str):
+            try:
+                mixin = UAfeatures[feature]
+            except:
+                raise Exception("unknown feature {}".format(feature)) from None
+        else:
+            mixin = feature
         class newcls(mixin, cls):
             pass
         cls = newcls
-    return cls
-
-def SIPPhoneClass(*ext):
-    if 'sec-agree' in ext and not Security.SEC_AGREE:
-        raise Exception('sec-agree is not possible. try to run script as root')
-    class cls(UAbase):
-        extensions = ext
-    cls = addmixin(cls, CancelationMixin, RegistrationMixin, AuthenticationMixin, SessionMixin)
     return cls
     
 if __name__ == '__main__':

@@ -93,24 +93,21 @@ class Transport(multiprocessing.Process):
         try:
             if 'UDP' in self.protocol:
                 self.mainudp = self.openmainUDP()
-                log.info("UDP listening on %s:%d", self.localip, self.localport)
+                log.info("UDP listening on %s:%d (fd=%d)", self.localip, self.localport, self.mainudp)
             if 'TCP' in self.protocol:
-                self.maintcp = self.openmainTCP()
-                log.info("TCP listening on %s:%d", self.localip, self.localport)
+                fd = self.openmainTCP()
+                log.info("TCP listening on %s:%d (fd=%d)", self.localip, self.localport, fd)
             if self.protocol == 'TLS':
                 pass
         except Exception as e:
             log.error("%s - %s", self, e)
             raise Exception("Transport initialization error") from None
 
-            self.localsa = self.remotesa = None
-            self.establishedSA = False
+        self.localsa = self.remotesa = None
+        self.establishedSA = False
 
     def __str__(self):
         return "{}:{}".format(self.localip, self.localport)
-
-    def getSA(self, *args):
-        return False
 
     def send(self, message, addr=None):
         assert isinstance(message, Message.SIPMessage)
@@ -139,55 +136,41 @@ class Transport(multiprocessing.Process):
                 if protocol == 'TCP':
                     message.length = len(message.body)
 
-                sa = self.getSA(dstip, dstport)
-                if sa:
+                if self.establishedSA:
                     if protocol == 'TCP':
-                        fd = sa.tcpc
-                        srcport = sa.portc
-                        addr = None
+                        fd = self.localsa['tcpc']
+                        srcport = self.localsa['portc']
+                        viaport = self.localsa['ports']
+                        addr = (dstip, dstport)
                     elif protocol == 'UDP':
-                        fd = sa.udpc
-                        srcport = sa.portc
+                        fd = self.localsa['udpc']
+                        srcport = self.localsa['portc']
+                        viaport = self.localsa['ports']
                         addr = (dstip, dstport)
                     protocol = '{}/ESP'.format(protocol)
                 else:
                     if protocol == 'TCP':
-                        fd,truesrcport = self.getclienttcpsocket(dstip, dstport)
-                        if fd == -1:
-                            fd,truesrcport = self.newtcp(dstip, dstport)
-                        srcport = self.localport
-                        addr = None
+                        fd,srcport = self.gettcpsocket(dstip, dstport)
+                        viaport = self.localport
+                        addr = (dstip, dstport)
                     elif protocol == 'UDP':
                         fd = self.mainudp
-                        srcport = self.localport
+                        viaport = srcport = self.localport
                         addr = (dstip, dstport)
 
                 via = message.header('via')
                 if via:
                     via.protocol = protocol[:3]
                     via.host = self.localip
-                    via.port = srcport if srcport!=5060 else None
-
-                try:
-                    srcport = truesrcport
-                except:
-                    pass
+                    via.port = viaport if viaport!=5060 else None
 
         elif isinstance(message, Message.SIPResponse):
+            assert addr is None
             via = message.header('via')
             if via:
                 protocol = via.protocol
                 dstip = via.params.get('received', via.host)
                 dstport = via.params.get('rport', via.port)
-            elif addr:
-                if self.protocol == 'UDP+TCP':
-                    if len(message) > 1300:
-                        protocol = 'TCP'
-                    else:
-                        protocol = 'UDP'
-                else:
-                    protocol = self.protocol
-                dstip,dstport = splitaddr(addr)
             else:
                 raise Exception("no address where to send response")
 
@@ -200,39 +183,33 @@ class Transport(multiprocessing.Process):
                 if protocol == 'TCP':
                     message.length = len(message.body)
 
-                sa = self.getSA(dstip, dstport)
-                if sa:
+                if self.establishedSA:
                     if protocol == 'TCP':
-                        fd = sa.tcps
-                        srcport = sa.ports
-                        addr = None
+                        fd = self.localsa['tcps']
+                        srcport = self.localsa['ports']
+                        addr = (dstip, dstport)
                     elif protocol == 'UDP':
-                        fd = sa.udps
-                        srcport = sa.ports
+                        fd = self.localsa['udpc']
+                        srcport = self.localsa['portc']
                         addr = (dstip, dstport)
                     protocol = '{}/ESP'.format(protocol)
                 else:
                     if protocol == 'TCP':
-                        if message.fd:
-                            fd,srcport = message.fd,self.localport
-                        else:
-                            fd,srcport = self.getservertcpsocket(dstip, dstport)
-                        if fd == -1:
-                            raise Exception("{} is not an existing server address".format((dstip, dstport)))
-                        addr = None
+                        fd,srcport = self.gettcpsocket(dstip, dstport, message.fd)
+                        addr = (dstip, dstport)
                     elif protocol == 'UDP':
                         fd = self.mainudp
                         srcport = self.localport
                         addr = (dstip, dstport)
 
-        log.info("%s:%d --%s-> %s:%d\n%s", self.localip, srcport, protocol, dstip, dstport, message)
+        log.info("%s:%d --%s-> %s:%d (fd=%d)\n%s", self.localip, srcport, protocol, dstip, dstport, fd, message)
         self.messagepipe.send((fd, addr, message.tobytes()))
 
     def recv(self, timeout=None):
         if self.messagepipe.poll(timeout):
             fd,protocol,(srcip,srcport),dstport,message = self.messagepipe.recv()
             message = Message.SIPMessage.frombytes(message)
-            if message:
+            if message is not None:
                 message.fd = fd
                 if isinstance(message, Message.SIPRequest):
                     via = message.header('via')
@@ -243,9 +220,9 @@ class Transport(multiprocessing.Process):
                             via.params['received'] = srcip
                             via.params['rport'] = srcport
                 esp = ''
-#                if self.establishedSA and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
-#                    esp = '/ESP'
-                log.info("%s:%s <-%s%s-- %s:%d\n%s", self.localip, dstport, protocol, esp, srcip, srcport, message)
+                if self.establishedSA and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
+                    esp = '/ESP'
+                log.info("%s:%s <-%s%s-- %s:%d (fd=%d)\n%s", self.localip, dstport, protocol, esp, srcip, srcport, fd, message)
                 return message
         return None
 
@@ -267,22 +244,14 @@ class Transport(multiprocessing.Process):
         fd = self.command('main', 'tcp')
         return fd
 
-    def getclienttcpsocket(self, remoteip, remoteport):
-        fd,localport = self.command('gettcp', 'client', (remoteip, remoteport))
-        return fd, localport
-
-    def newtcp(self, remoteip, remoteport):
-        fd,localport = self.command('newtcp', (remoteip, remoteport))
-        return fd, localport
-
-    def getservertcpsocket(self, remoteip, remoteport):
-        fd,localport = self.command('gettcp', 'server', (remoteip, remoteport))
+    def gettcpsocket(self, remoteip, remoteport, fd=None):
+        fd,localport = self.command('gettcp', (remoteip, remoteport), fd)
         return fd, localport
 
     def prepareSA(self, remoteip):
         self.localsa = self.command('sa', 'prepare', self.localip, remoteip)
-        self.localsa.pop('ip')
-        return self.localsa
+        sa = {k:self.localsa[k] for k in ('spis', 'spic', 'ports', 'portc')}
+        return sa
 
     def establishSA(self, **kwargs):
         self.remotesa  = self.command('sa', 'establish', kwargs)
@@ -296,15 +265,13 @@ class Transport(multiprocessing.Process):
     def run(self):
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         localaddr = (self.localip, self.localport)
-        maintcp = None
-        mainudp = None
-        clientsockets = ServiceSockets()
-        serversockets = ServiceSockets()
+        tcplisteningsocket = None
+        servicesockets = ServiceSockets()
         sa = None
         while True:
-            sockets = [self.childcommandpipe, self.childmessagepipe, mainudp, maintcp] + \
-                      list(clientsockets) + list(serversockets)
-            sockets = list(filter(None, sockets))
+            sockets = [self.childcommandpipe, self.childmessagepipe] + \
+                      ([tcplisteningsocket] if tcplisteningsocket else []) + \
+                      servicesockets
             for obj in multiprocessing.connection.wait(sockets, 1):
                 # Command comming from main process
                 if obj == self.childcommandpipe:
@@ -318,11 +285,11 @@ class Transport(multiprocessing.Process):
                         layer4, = command[1:]
                         if layer4 == 'tcp':
                             try:
-                                maintcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                maintcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                                maintcp.bind(localaddr)
-                                maintcp.listen()
-                                self.childcommandpipe.send(maintcp.fileno())
+                                tcplisteningsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                tcplisteningsocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                                tcplisteningsocket.bind(localaddr)
+                                tcplisteningsocket.listen()
+                                self.childcommandpipe.send(tcplisteningsocket.fileno())
                             except OSError as err:
                                 exc = Exception("cannot bind TCP socket to {}:{}. errno={}".format(*localaddr, errno.errorcode[err.errno]))
                                 self.childcommandpipe.send(exc)
@@ -330,48 +297,46 @@ class Transport(multiprocessing.Process):
                             try:
                                 mainudp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                                 mainudp.bind(localaddr)
+                                servicesockets.new(mainudp)
                                 self.childcommandpipe.send(mainudp.fileno())
                             except OSError as err:
                                 exc = Exception("cannot bind UDP socket to {}:{}. errno={}".format(localip, localport, errno.errorcode[err.errno]))
                                 self.childcommandpipe.send(exc)
                     elif command[0] == 'gettcp':
-                        direction,remoteaddr = command[1:]
-                        if direction == 'client':
-                            sockets = clientsockets
-                        elif direction == 'server':
-                            sockets = serversockets
-                        sock = sockets.get(remoteaddr)
-                        if sock:
-                            self.childcommandpipe.send((sock.fileno(), sock.getsockname()[1]))
+                        remoteaddr,fd = command[1:]
+                        for sock in servicesockets:
+                            if sock.tcp and (sock.fd==fd or sock.remoteaddr==remoteaddr):
+                                break
                         else:
-                            self.childcommandpipe.send((-1, -1))
-                    elif command[0] == 'newtcp':
-                        remoteaddr, = command[1:]
-                        try:
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            sock.settimeout(.5)
-                            sock.bind((self.localip, 0))
-                            sock.connect(remoteaddr)
-                            clientsockets.add(sock, remoteaddr)
-                            self.childcommandpipe.send((sock.fileno(), sock.getsockname()[1]))
-                        except OSError as err:
-                            exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
-                            self.childcommandpipe.send(exc)
+                            try:
+                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                sock.settimeout(.5)
+                                sock.bind((self.localip, 0))
+                                sock.connect(remoteaddr)
+                                sock = servicesockets.new(sock)
+                            except OSError as err:
+                                exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
+                                self.childcommandpipe.send(exc)
+                                continue
+                        self.childcommandpipe.send((sock.fd, sock.localport))
                     elif command[0] == 'sa':
                         try:
                             if command[1] == 'prepare':
                                 sa = Security.SA(*command[2:])
-                                local  = dict(ip=sa.local.ip,  spis=sa.local.spis,  spic=sa.local.spic,  ports=sa.local.ports,  portc=sa.local.portc)
+                                local  = dict(ip=sa.local.ip,
+                                              spis=sa.local.spis,  spic=sa.local.spic,
+                                              ports=sa.local.ports,  portc=sa.local.portc,
+                                              udpc=sa.local.udpc.fileno(), udps=sa.local.udps.fileno(),
+                                              tcpc=sa.local.tcpc.fileno(), tcps=sa.local.tcps.fileno()
+                                )
                                 self.childcommandpipe.send(local)
                             elif command[1] == 'establish':
                                 sa.finalize(**command[2])
-                                udps.append(sa.udps)
-                                udps.append(sa.udpc)
+                                sa.local.udps = servicesockets.new(sa.local.udps)
+                                sa.local.udpc = servicesockets.new(sa.local.udpc)
                                 remote = dict(ip=sa.remote.ip, spis=sa.remote.spis, spic=sa.remote.spic, ports=sa.remote.ports, portc=sa.remote.portc)
                                 self.childcommandpipe.send(remote)
                             elif command[1] == 'terminate':
-                                udps.remove(sa.udps)
-                                udps.remove(sa.udpc)
                                 sa.terminate()
                                 sa = None
                                 self.childcommandpipe.send(None)
@@ -379,115 +344,120 @@ class Transport(multiprocessing.Process):
                             self.childcommandpipe.send(exc)
                     else:
                         self.childcommandpipe.send(Exception("unknown command %s", ' '.join(command)))
-                    continue
 
                 # Message comming from main process --> send to remote address
                 elif obj == self.childmessagepipe:
                     fd,remoteaddr,packet = self.childmessagepipe.recv()
-                    sock = clientsockets.get(fd, serversockets.get(fd, mainudp))
-                    if sock.fileno() != fd:
-                        continue
-                    try:
-                        if remoteaddr:
-                            sock.sendto(packet, remoteaddr)
-                        else:
-                            sock.sendall(packet)
-                    except Exception as e:
-                        dispatcherror(*localaddr, *remoteaddr, str(e), packet)
-
-                # Incomming TCP connection --> new socket added (will be read in the next result of poll)
-                elif obj == maintcp:
-                    serversockets.add(*obj.accept())
-
-                # Incomming UDP packet --> decode and send to main process
-                elif obj == mainudp:
-                    packet,remoteaddr = obj.recvfrom(65536)
-                    decodeinfo = Message.SIPMessage.predecode(packet)
-                    # Discard inconsistent messages
-                    if decodeinfo.status != 'OK':
-                        continue
-                    
-                    self.childmessagepipe.send((obj.fileno(), 'UDP',remoteaddr,obj.getsockname()[1],packet[decodeinfo.istart:decodeinfo.iend]))
-
-                # Incomming TCP buffer --> assemble with previous buffer(done by ServiceSocket class), decode and send to main process
-                else:
-                    if obj in clientsockets:
-                        tcpsockets = clientsockets
-                    elif obj in serversockets:
-                        tcpsockets = serversockets
+                    for sock in servicesockets:
+                        if sock.fd==fd:
+                            try:
+                                sock.send(packet, remoteaddr)
+                            except Exception as e:
+                                dispatcherror(*localaddr, *remoteaddr, str(e), packet)
+                            break
                     else:
-                        assert(False)
-                    buf,remoteaddr = tcpsockets.recvfrom(obj)
-                    while True:
+                        dispatcherror(*localaddr, *remoteaddr, "cannot find socket with fd={}".format(fd), packet)
+
+                # Incomming TCP connection --> new socket (will be read in the next result of poll)
+                elif obj == tcplisteningsocket:
+                    sock = obj.accept()[0]
+                    servicesockets.new(sock)
+
+                # Incomming packet --> decode and send to main process
+                elif obj in servicesockets:
+                    buf,remoteaddr = obj.recv()
+                    if obj.udp:
                         decodeinfo = Message.SIPMessage.predecode(buf)
 
-                        # Erroneous messages or messages missing a Content-Length make the stream desynchronized
-                        if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and not decodeinfo.framing):
-                            tcpsockets.delete(obj)
-                            break
-
-                        # Ignore inconsistent messages, wait for the rest of the buffer
+                        # Discard inconsistent messages
                         if decodeinfo.status != 'OK':
-                            break
+                            continue
 
-                        self.childmessagepipe.send((obj.fileno(), 'TCP',remoteaddr,obj.getsockname()[1],buf[decodeinfo.istart:decodeinfo.iend]))
-                        del buf[:decodeinfo.iend]
-                            
-            clientsockets.cleanup()
-            serversockets.cleanup()
+                        messagebytes = buf[decodeinfo.istart:decodeinfo.iend]
+                        self.childmessagepipe.send((obj.fd,'UDP',remoteaddr,obj.localport,messagebytes))
 
-class ServiceSockets:
-    TIMEOUT = 32.
-    
-    def __init__(self):
-        self.byfd = {}
-        self.byaddr = {}
+                    elif obj.tcp:
+                        # assemble with previous buffer stored in TCPSocket
+                        while True:
+                            decodeinfo = Message.SIPMessage.predecode(buf)
 
-    def add(self, sock, addr):
-        newitem = (sock, addr, bytearray(), [time.monotonic()])
-        self.byfd[sock.fileno()] = newitem
-        self.byaddr[addr] = newitem
+                            # Erroneous messages or messages missing a Content-Length make the stream desynchronized
+                            if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and not decodeinfo.framing):
+                                obj.close()
+                                break
 
-    def get(self, fdoraddr, default=None):
-        if isinstance(fdoraddr, int):
-            return self.byfd.get(fdoraddr, [default])[0]
-        return self.byaddr.get(fdoraddr, [default])[0]
+                            # Ignore inconsistent messages, wait for the rest of the buffer
+                            if decodeinfo.status != 'OK':
+                                break
 
-    def __iter__(self):
-        for value in self.byfd.values():
-            yield value[0]
+                            messagebytes = buf[decodeinfo.istart:decodeinfo.iend]
+                            self.childmessagepipe.send((obj.fd,'TCP',remoteaddr,obj.localport,messagebytes))
+                            del buf[:decodeinfo.iend]
 
-    def __contains__(self, sock):
-        return sock.fileno() in self.byfd
+                servicesockets.cleanup()
 
-    def recvfrom(self, sock):
-        sock,addr,buf,lasttime = self.byfd[sock.fileno()]
-        lasttime[0] = time.monotonic()
-        newbuf = sock.recv(8192)
+
+class ServiceSocket:
+    def __init__(self, sock, pool):
+        self.__dict__.update(dict(
+            sock = sock,
+            pool = pool,
+            fd = sock.fileno(),
+            localport = sock.getsockname()[1],
+            tcp = bool(sock.type & socket.SOCK_STREAM),
+            udp = bool(sock.type & socket.SOCK_DGRAM)
+        ))
+        if self.tcp:
+            self.__dict__.update(dict(
+                remoteaddr = sock.getpeername(),
+                buf = bytearray(),
+                touchtime = time.monotonic()
+            ))
+    def __repr__(self):
+        return repr(self.sock)
+    def __getattr__(self, attr):
+        value = self.__dict__.get(attr)
+        if value is None:
+            value = getattr(self.sock, attr)
+        return value
+
+    def send(self, packet, remoteaddr):
+        if self.udp:
+            self.sock.sendto(packet, remoteaddr)
+
+        elif self.tcp:
+            self.sock.sendall(packet)
+
+    def recv(self):
+        if self.udp:
+            return self.sock.recvfrom(65536)
+
+        # TCP stream
+        newbuf = self.sock.recv(8192)
         if not newbuf:
-            self.delete(obj)
-        buf += newbuf
-        return buf,addr
+            self.close()
+        self.buf += newbuf
+        self.touchtime = time.monotonic()
+        return self.buf,self.remoteaddr
 
-    def delete(self, fdorsock):
-        if isinstance(fdorsock, int):
-            fd = fdorsock
-        else:
-            fd = fdorsock.fileno()
-        sock,addr,buf,lasttime = self.byfd[fd]
-        try:
-            sock.close()
-        except:
-            pass
-        del self.byfd[fd]
-        del self.byaddr[addr]
+    def close(self):
+        assert self in self.pool
+        self.pool.remove(self)
+        self.sock.close()
+
+class ServiceSockets(list):
+    TIMEOUT = 32.
+    def new(self, sock):
+        sock = ServiceSocket(sock, self)
+        self.append(sock)
+        return sock
 
     def cleanup(self):
         # TCP socket that are idle for more than 64*T1 sec are closed [18]
         currenttime = time.monotonic()
-        for fd,(sock,addr,buf,lasttime) in list(self.byfd.items()):
-            if currenttime - lasttime[0] > self.TIMEOUT:
-                self.delete(fd)
+        for sock in self.copy():
+            if sock.tcp and currenttime - sock.touchtime > self.TIMEOUT:
+                sock.close()
 
 
 class ErrorDispatcher(threading.Thread):

@@ -303,6 +303,9 @@ class SIPResponse(SIPMessage):
     def startline(self):
         return 'SIP/2.0 {} {}'.format(self.code, self.reason).encode('utf-8')
 
+    def __bool__(self):
+        return self.familycode == 2
+
 class RequestMeta(type):
     @staticmethod
     def __prepare__(name, bases, **dikt):

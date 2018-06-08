@@ -32,5 +32,5 @@ log = logging.getLogger('Main')
 
 from .SIPBNF import URI
 from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
-from .UA import SIPPhoneClass
+from .UA import SIPPhoneClass, UAfeatures
 from .Media import Media

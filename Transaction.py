@@ -158,7 +158,7 @@ class ACKWaiter():
         with self.lock:
             response = self.responses.get(dialogid)
 
-        if response:
+        if response is not None:
             self.transport.send(response)
 
             delay *= 2
@@ -181,7 +181,7 @@ class Handler(threading.Thread):
         self.start()
     def run(self):
         response = self.handler(self.request)
-        if response:
+        if response is not None:
             if response.CseqMETHOD not in ('ACK', 'CANCEL') and self.allow:
                 response.addheaders(
                     'Allow: {}'.format(', '.join(self.allow)),
@@ -247,10 +247,10 @@ class Transaction:
                 eventcb = getattr(self, '{}_Request'.format(self.state), None)
             if eventcb:
                 state = self.state
-                if response:
+                if response is not None:
                     log.info("%s <-- Response %s %s", self, message.code, message.reason)
                     self.lastresponse = response
-                if request:
+                if request is not None:
                     log.info("%s <-- %s", self, request.METHOD)
                     self.lastrequest = request
                 informTU = eventcb()

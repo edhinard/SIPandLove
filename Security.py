@@ -134,11 +134,13 @@ def AKA(nonce, K, OP):
 
 AUTH_DICT = {
     'hmac-md5-96'   : 'md5 0x{}',
-    'hmac-sha-1-96' : 'sha1 0x{}'}
+    'hmac-sha-1-96' : 'sha1 0x{}'
+}
 ENC_DICT = {
     'null'          : 'cipher_null ""',
-    'des-ede3-cbc'  : 'des3_ede 0x{}',
-    'aes-cbc'       : 'aes 0x{}'}
+#    'des-ede3-cbc'  : 'des3_ede 0x{}',
+#    'aes-cbc'       : 'aes 0x{}'
+}
 IPSEC_ALGS = tuple(AUTH_DICT.keys())
 IPSEC_EALGS = tuple(ENC_DICT.keys())
 
@@ -267,10 +269,10 @@ class SA:
             self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spis}''')
 
         # close sockets
-        self.tcpc.close()
-        self.udpc.close()
-        self.tcps.close()
-        self.udps.close()
+        self.local.tcpc.close()
+        self.local.udpc.close()
+        self.local.tcps.close()
+        self.local.udps.close()
 
         self.state = 'finished'
 
@@ -296,8 +298,8 @@ class SA:
 
 
     def reserveports(self):
-        self.local.portc, self.tcpc, self.udpc = self.reserveoneport()
-        self.local.ports, self.tcps, self.udps = self.reserveoneport()
+        self.local.portc, self.local.tcpc, self.local.udpc = self.reserveoneport()
+        self.local.ports, self.local.tcps, self.local.udps = self.reserveoneport()
 
 
     def reserveoneport(self):
