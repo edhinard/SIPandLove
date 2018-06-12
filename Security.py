@@ -133,7 +133,7 @@ def AKA(nonce, K, OP):
 
 
 AUTH_DICT = {
-    'hmac-md5-96'   : 'md5 0x{}',
+#    'hmac-md5-96'   : 'md5 0x{}',
     'hmac-sha-1-96' : 'sha1 0x{}'
 }
 ENC_DICT = {

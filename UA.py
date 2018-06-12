@@ -318,7 +318,7 @@ class Session(metaclass=Mixin):
                     return invite.response(488)
             except Exception as exc:
                 log.info("%s %s -> rejecting", self, exc)
-                return invite.response(500)
+                return invite.response(603)
 
             log.info("%s accept invitation", self)
             response.setbody(*media.getlocaloffer())

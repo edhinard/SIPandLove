@@ -64,7 +64,7 @@ class Transport(multiprocessing.Process):
         Transport.instances.add(instance)
         return instance
 
-    def __init__(self, *, listenpoint, protocol='UDP+TCP', errorcb=None):
+    def __init__(self, *, listenpoint, protocol='UDP+TCP', errorcb=None, sendcb=None, recvcb=None):
         localiporinterface,self.localport = splitaddr(listenpoint)
         if not '.' in localiporinterface:
             try:
@@ -79,6 +79,8 @@ class Transport(multiprocessing.Process):
         if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
             raise Exception("bad value for protocol transport: {}".format(protocol))
         self.errorcb = errorcb
+        self.sendcb = sendcb
+        self.recvcb = recvcb
         if not self.localport:
             if self.protocol == 'TLS':
                 self.localport = 5061
@@ -101,7 +103,7 @@ class Transport(multiprocessing.Process):
                 pass
         except Exception as e:
             log.error("%s - %s", self, e)
-            raise Exception("Transport initialization error") from None
+            raise
 
         self.localsa = self.remotesa = None
         self.establishedSA = False
@@ -202,6 +204,8 @@ class Transport(multiprocessing.Process):
                         srcport = self.localport
                         addr = (dstip, dstport)
 
+        if self.sendcb:
+            self.sendcb(message)
         log.info("%s:%d --%s-> %s:%d (fd=%d)\n%s", self.localip, srcport, protocol, dstip, dstport, fd, message)
         self.messagepipe.send((fd, addr, message.tobytes()))
 
@@ -223,6 +227,8 @@ class Transport(multiprocessing.Process):
                 if self.establishedSA and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
                     esp = '/ESP'
                 log.info("%s:%s <-%s%s-- %s:%d (fd=%d)\n%s", self.localip, dstport, protocol, esp, srcip, srcport, fd, message)
+                if self.recvcb:
+                    self.recvcb(message)
                 return message
         return None
 
@@ -292,6 +298,8 @@ class Transport(multiprocessing.Process):
                                 self.childcommandpipe.send(tcplisteningsocket.fileno())
                             except OSError as err:
                                 exc = Exception("cannot bind TCP socket to {}:{}. errno={}".format(*localaddr, errno.errorcode[err.errno]))
+                                tcplisteningsocket.close()
+                                tcplisteningsocket = None
                                 self.childcommandpipe.send(exc)
                         elif layer4 == 'udp':
                             try:
@@ -310,10 +318,14 @@ class Transport(multiprocessing.Process):
                         else:
                             try:
                                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                sock.settimeout(.5)
+                                sock.settimeout(2)
                                 sock.bind((self.localip, 0))
                                 sock.connect(remoteaddr)
                                 sock = servicesockets.new(sock)
+                            except socket.timeout as err:
+                                exc = Exception("cannot connect to {}:{}. timeout".format(*remoteaddr))
+                                self.childcommandpipe.send(exc)
+                                continue
                             except OSError as err:
                                 exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
                                 self.childcommandpipe.send(exc)
