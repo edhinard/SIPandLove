@@ -160,22 +160,19 @@ class Authentication(metaclass=Mixin):
         self.credentials = credentials
         self.sa = None
         self.savedproxy = None
-        self.extraheaders = []
+        self.saheaders = []
     def sendmessage(self, message):
-#        message.removeheaders('security-client')
         needsecurity = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
         if needsecurity and self.sa is None:
             username = self.credentials.get('username')
             uri = self.credentials.get('uri', self.domain)
             realm = self.credentials.get('realm', username.partition('@')[2])
-            #message.addheaders(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
-            self.extraheaders.append(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
+            self.saheaders.append(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
             self.sa = self.transport.prepareSA(Transport.splitaddr(self.proxy)[0])
             for alg in Security.IPSEC_ALGS:
                 for ealg in Security.IPSEC_EALGS:
-                    #message.addheaders(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
-                    self.extraheaders.append(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
-        message.addheaders(*self.extraheaders, replace=True)
+                    self.saheaders.append(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
+        message.addheaders(*self.saheaders, replace=True)
         for result in super().sendmessage(message):
             if result.error is not None and result.error.code in (401, 407):
                 if needsecurity:
@@ -209,7 +206,7 @@ class Authentication(metaclass=Mixin):
                         for sec in result.error.headers('security-server'):
                             verify = Header.Security_Verify(**dict(sec))
                             message.addheaders(verify)
-                            self.extraheaders.append(verify)
+                            self.saheaders.append(verify)
                         self.savedproxy = self.proxy
                         self.proxy = (Transport.splitaddr(self.proxy)[0], securityserverparams['ports'])
                         self.contacturi.port = self.sa['ports']
@@ -222,15 +219,16 @@ class Authentication(metaclass=Mixin):
                 yield result
 
     def _register(self, expires=3600, *headers):
-        registered = super()._register(expires, *headers)
-        if not registered and self.sa:
+        result = super()._register(expires, *headers)
+        if expires==0 and result and self.sa:
             self.transport.terminateSA()
             self.sa = None
             if self.savedproxy:
                 self.proxy = self.savedproxy
                 self.savedproxy = None
+            self.saheaders = []
             self.contacturi.port = self.transport.localport
-        return registered
+        return result
 
 class Session(metaclass=Mixin):
     def __init__(self, mediaclass=Media.Media, mediaargs={}, **kwargs):

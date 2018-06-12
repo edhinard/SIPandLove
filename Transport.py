@@ -300,7 +300,7 @@ class Transport(multiprocessing.Process):
                                 servicesockets.new(mainudp)
                                 self.childcommandpipe.send(mainudp.fileno())
                             except OSError as err:
-                                exc = Exception("cannot bind UDP socket to {}:{}. errno={}".format(localip, localport, errno.errorcode[err.errno]))
+                                exc = Exception("cannot bind UDP socket to {}:{}. errno={}".format(*localaddr, errno.errorcode[err.errno]))
                                 self.childcommandpipe.send(exc)
                     elif command[0] == 'gettcp':
                         remoteaddr,fd = command[1:]
