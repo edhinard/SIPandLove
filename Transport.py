@@ -35,7 +35,7 @@ class Transport(multiprocessing.Process):
         Transport.instances.add(instance)
         return instance
 
-    def __init__(self, *, interface=None, index=None, address=None, port=None, protocol='UDP+TCP', errorcb=None, sendcb=None, recvcb=None):
+    def __init__(self, *, interface=None, index=0, address=None, port=None, protocol='UDP+TCP', errorcb=None, sendcb=None, recvcb=None):
         self.started = False
         if interface:
             if address:
