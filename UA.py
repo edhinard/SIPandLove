@@ -18,10 +18,29 @@ from . import Security
 from . import Transport
 from . import Utils
 
+
 class UAbase(Transaction.TransactionManager):
     def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None):
+        if isinstance(transport, str):
+            port = None
+            if ':' in transport:
+                transport,port = transport.split(':', 1)
+            if '.' in transport:
+                transport = dict(address=transport)
+            else:
+                transport = dict(interface=transport)
+            if port is not None:
+                transport['port'] = port
         super().__init__(transport, T1, T2, T4)
-        self.proxy = proxy
+        if isinstance(proxy, str):
+            if ':' in proxy:
+                self.proxy = proxy.split(':', 1)
+            else:
+                self.proxy = (proxy, None)
+        else:
+            assert isinstance(proxy, (list,tuple))
+            assert len(proxy) == 2
+            self.proxy = tuple(proxy)
         self.domain = domain
         self.addressofrecord = addressofrecord
         self.contacturi = SIPBNF.URI(self.addressofrecord)
@@ -168,7 +187,7 @@ class Authentication(metaclass=Mixin):
             uri = self.credentials.get('uri', self.domain)
             realm = self.credentials.get('realm', username.partition('@')[2])
             self.saheaders.append(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
-            self.sa = self.transport.prepareSA(Transport.splitaddr(self.proxy)[0])
+            self.sa = self.transport.prepareSA(self.proxy[0])
             for alg in Security.IPSEC_ALGS:
                 for ealg in Security.IPSEC_EALGS:
                     self.saheaders.append(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
@@ -208,7 +227,7 @@ class Authentication(metaclass=Mixin):
                             message.addheaders(verify)
                             self.saheaders.append(verify)
                         self.savedproxy = self.proxy
-                        self.proxy = (Transport.splitaddr(self.proxy)[0], securityserverparams['ports'])
+                        self.proxy = (self.proxy[0], securityserverparams['ports'])
                         self.contacturi.port = self.sa['ports']
                         message.contacturi.port = self.sa['ports']
                     message.addheaders(auth.header, replace=True)

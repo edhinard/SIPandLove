@@ -20,42 +20,13 @@ log = logging.getLogger('Transport')
 from . import Message
 from . import Header
 from . import Security
+from . import Utils
 
-
-# http://code.activestate.com/recipes/439094
-def get_ip_address(ifname):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    return socket.inet_ntoa(fcntl.ioctl(
-        s.fileno(),
-        0x8915,  # SIOCGIFADDR
-        struct.pack('256s', ifname[:15].encode('ascii'))
-    )[20:24])
 
 @atexit.register
 def cleanup():
     for transport in Transport.instances:
         transport.stop()
-
-def splitaddr(addr):
-    addr = addr or (None,None)
-    if isinstance(addr, str):
-        if ':' in addr:
-            ip,port = addr.split(':', 1)
-        else:
-            ip = addr
-            port = None
-    elif isinstance(addr, (list,tuple)):
-        if len(addr) != 2:
-            raise Exception("expecting 2 values in addr ({!r})".format(addr))
-        ip,port = addr
-    else:
-        raise Exception("addr should be a 2uple or a string not {!r}".format(addr))
-    try:
-        if port is not None:
-            port = int(port)
-    except:
-        raise Exception("port number in addr ({!r}) should be None or an int".format(port))
-    return ip,port
 
 class Transport(multiprocessing.Process):
     instances = weakref.WeakSet()
@@ -64,17 +35,23 @@ class Transport(multiprocessing.Process):
         Transport.instances.add(instance)
         return instance
 
-    def __init__(self, *, listenpoint, protocol='UDP+TCP', errorcb=None, sendcb=None, recvcb=None):
-        localiporinterface,self.localport = splitaddr(listenpoint)
-        if not '.' in localiporinterface:
+    def __init__(self, *, interface=None, index=None, address=None, port=None, protocol='UDP+TCP', errorcb=None, sendcb=None, recvcb=None):
+        self.started = False
+        if interface:
+            if address:
+                raise Exception("cannot set both interface and address for transport")
+            interfaces = Utils.getinterfaces()
+            if interface not in interfaces:
+                raise Exception("unknown interface {}".format(interface))
             try:
-                self.localip = get_ip_address(localiporinterface)
-            except Exception as e:
-                log.error("%s %r", e, localiporinterface)
-                raise
+                self.localip = interfaces[interface][index]
+            except:
+                raise Exception("bad index {} for transport interface. Expecting an integer in [0-{}]".format(index, len(interfaces[interface])-1)) from None
+        elif address:
+            self.localip = address
         else:
-            self.localip = localiporinterface
-
+            raise Exception("missing interface or address parameter for transport")
+        self.localport = port
         self.protocol = protocol.upper()
         if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
             raise Exception("bad value for protocol transport: {}".format(protocol))
@@ -90,6 +67,7 @@ class Transport(multiprocessing.Process):
         self.commandpipe,self.childcommandpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self)
         self.start()
+        self.started = True
         log.info("%s starting process %d", self, self.pid)
 
         try:
@@ -122,7 +100,7 @@ class Transport(multiprocessing.Process):
 
         if isinstance(message, Message.SIPRequest):
             assert addr
-            dstip,dstport = splitaddr(addr)
+            dstip,dstport = addr
             protocol = self.protocol
             if protocol == 'TLS':
                 dstport = dstport or 5061
@@ -240,7 +218,8 @@ class Transport(multiprocessing.Process):
         return ret
 
     def stop(self):
-        self.commandpipe.send(('stop',))
+        if self.started:
+            self.commandpipe.send(('stop',))
 
     def openmainUDP(self):
         fd = self.command('main', 'udp')

@@ -17,8 +17,6 @@ class TransactionManager(threading.Thread):
     modifyafterreceive = None
     def __init__(self, transport, T1=None, T2=None, T4=None):
         threading.Thread.__init__(self, daemon=True)
-        if isinstance(transport, str):
-            transport = dict(listenpoint=transport)
         self.transport = Transport.Transport(**transport, errorcb=self.transporterror, sendcb=self.modifybeforesend, recvcb=self.modifyafterreceive)
         self.T1 = T1 or .5
         self.T2 = T2 or 4.

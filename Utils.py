@@ -2,6 +2,10 @@
 
 import re
 import collections
+import socket
+import fcntl
+import struct
+import array
 
 ESCAPE_RE=re.compile('\\\\[\r\n]')
 def unquote(string):
@@ -121,4 +125,70 @@ class ParameterDict:
         return repr(self)
 
 
+def getinterfaces():
+    SIOCGIFCONF = 0x8912
+    IFNAMSIZ = 16
 
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    # I - Estimating sizeof(ifreq)
+    #
+    #  ioctl(SIOCGIFCONF) waits for an ifconf structure.
+    #  struct ifconf {
+    #   int                 ifc_len; /* size of buffer */
+    #   union {
+    #    char           *ifc_buf; /* buffer address */
+    #    struct ifreq   *ifc_req; /* array of structures */
+    #   };
+    #  };
+    # The actual number of bytes transferred is returned in ifc_len.
+    #
+    # If the given ifc_req buffer is too small the returned ifc_len is null.
+    # Thus, we first run ioctl(SIOCGIFCONF) on increasing ifc_req buffers
+    # until the result contains one ifreq
+    sizeofifreq = 1
+    while True:
+        ifreqs = array.array('B', b'\x00'*sizeofifreq)
+        ifc_buf,ifc_len = ifreqs.buffer_info()
+        ifconf = bytearray(struct.pack('iL', ifc_len, ifc_buf))
+        fcntl.ioctl(s.fileno(), SIOCGIFCONF, ifconf)
+        ifc_len = struct.unpack_from('i', ifconf)[0]
+        if ifc_len == sizeofifreq:
+            break
+        sizeofifreq += 1
+
+    # II - Getting number of IP addresses
+    #
+    # still using ioctl(SIOCGIFCONF) but with ifc_len = 0
+    # the returned ifc_len then equals n * sizeof(ifreq) where n is
+    # the number of IP addresses
+    ifconf = bytearray(struct.pack('iL', 0, 0))
+    fcntl.ioctl(s.fileno(), SIOCGIFCONF, ifconf)
+    ipnum = struct.unpack_from('i', ifconf)[0] // sizeofifreq
+
+    # III - Getting all ifreq buffers
+    #
+    #       struct ifreq {
+    #           char ifr_name[IFNAMSIZ]; /* Interface name */
+    #           union {
+    #               struct sockaddr ifr_addr;
+    #                 ...
+    #           };
+    #       }
+    # runnning ioctl(SIOCGIFCONF) for the last time with a buffer
+    # big enough to contains all ifreqs (there are ipnum)
+    # ifr_name and ifr_addr (IPv4) fields are filled
+    ifreqs = array.array('B', b'\x00'*sizeofifreq*ipnum)
+    ifc_buf,ifc_len = ifreqs.buffer_info()
+    ifconf = bytearray(struct.pack('iL', ifc_len, ifc_buf))
+    fcntl.ioctl(s.fileno(), SIOCGIFCONF, ifconf)
+    ifc_len = struct.unpack_from('i', ifconf)[0]
+    ifreqs = bytes(ifreqs)
+    interfaces = {}
+    for offset in range(0,ipnum*sizeofifreq,sizeofifreq):
+        ifr_name = ifreqs[offset:offset+IFNAMSIZ].rstrip(b'\x00').decode('ascii')
+        sa_family = ifreqs[offset+IFNAMSIZ:offset+IFNAMSIZ+4]
+        ifr_addr = socket.inet_ntoa(ifreqs[offset+IFNAMSIZ+4:offset+IFNAMSIZ+8])
+        interfaces.setdefault(ifr_name, []).append(ifr_addr)
+
+    s.close()
+    return interfaces
