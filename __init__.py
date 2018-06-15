@@ -1,34 +1,66 @@
 import sys
 import logging
 import types
+import re
 
 assert sys.version_info >= (3,5)
 
-def getIndentedMessage(record):
-    return logging.LogRecord.getMessage(record).replace('\n','\n   ')
 class ColoredFormatter(logging.Formatter):
+    STATUS_LINE_RE = re.compile('SIP/2.0 (?P<code>[1-7]\d\d) (?P<reason>.+)', re.IGNORECASE)
+    REQUEST_LINE_RE = re.compile('''(?P<method>[A-Za-z0-9.!%*_+`'~-]+) (?P<requesturi>[^ ]+) SIP/2.0''', re.IGNORECASE)
+    default_time_format = "%H:%M:%S"
     escapecodes = {'CRITICAL':'2;91;41',
                    'ERROR':'2;91',
                    'WARNING':'22;93',
                    'INFO':'2;96',
                    'DEBUG':'2;94'
                    }
-    def __init__(self):
-        logging.Formatter.__init__(self, "\x1b[2;37m%(asctime)s %(coloredlevelname)s \x1b[1;97m%(name)s\x1b[m %(message)s")
     def format(self, record):
-        record.coloredlevelname = "\x1b[{}m{:<8}\x1b[m".format(ColoredFormatter.escapecodes[record.levelname], record.levelname)
-        record.getMessage = types.MethodType(getIndentedMessage, record)
+        record.indentedmessage = self.indentmessage(logging.LogRecord.getMessage(record))
+        record.levelcolor = ColoredFormatter.escapecodes[record.levelname]
         return logging.Formatter.format(self, record)
+    def indentmessage(self, message):
+        lines = message.splitlines()
+        if len(lines) > 1:
+            lines[0] += '\x1b[m'
+        if len(lines) > 2:
+            requestline = ColoredFormatter.REQUEST_LINE_RE.search(lines[1])
+            statusline = ColoredFormatter.STATUS_LINE_RE.search(lines[1])
+            if requestline:
+                lines[1] = "\x1b[92m{method} {requesturi}\x1b[m SIP/2.0".format(**requestline.groupdict())
+            elif statusline:
+                lines[1] = "\x1b[mSIP/2.0 \x1b[92m{code} {reason}\x1b[m".format(**statusline.groupdict())
+        return '\n   '.join(lines)
 
+
+# Module Internal loggers
 loghandler = logging.StreamHandler(sys.stdout)
-logformatter = ColoredFormatter()
-logformatter.default_time_format = "%H:%M:%S"
+logformatter = ColoredFormatter("\x1b[2;37m%(asctime)s \x1b[%(levelcolor)sm%(levelname)-8s\x1b[m \x1b[4m%(name)s\x1b[m \x1b[97m%(indentedmessage)s\x1b[m")
 loghandler.setFormatter(logformatter)
-loggers = {mod:logging.getLogger(mod) for mod in ('Header', 'Message', 'Transport', 'Security', 'Transaction', 'Media', 'Dialog', 'UA', 'Main')}
-for log in loggers.values():
-    log.setLevel('WARNING')
+loggers = {}
+for submodule,level in (('Header',      'WARNING'),
+                        ('Message',     'WARNING'),
+                        ('Security',    'WARNING'),
+                        ('Transaction', 'WARNING'),
+                        ('Media',       'WARNING'),
+                        ('Dialog',      'INFO'),
+                        ('Transport',   'INFO'),
+                        ('UA',          'INFO')):
+    log = logging.getLogger(submodule)
+    log.setLevel(level)
     log.addHandler(loghandler)
+    loggers[submodule] = log
+
+
+# Script logger
+mainloghandler = logging.StreamHandler(sys.stdout)
+mainlogformatter = ColoredFormatter("\x1b[2;37m%(asctime)s \x1b[%(levelcolor)sm%(indentedmessage)s\x1b[m")
+mainloghandler.setFormatter(mainlogformatter)
 log = logging.getLogger('Main')
+log.setLevel('INFO')
+log.addHandler(mainloghandler)
+log.error(66*"#")
+
 
 from .SIPBNF import URI
 from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
