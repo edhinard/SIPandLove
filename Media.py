@@ -16,6 +16,8 @@ import collections
 import signal
 log = logging.getLogger('Media')
 
+from . import Pcap
+
 class Media(threading.Thread):
     defaultcodecs = {
         0 :('PCMU/8000',   None),
@@ -272,7 +274,7 @@ class RTPStream:
     filtercriterions = ('srcport', 'dstport', 'PT', 'SSRC')
 
     def __init__(self, pcapfilename, pcapfilter=None):
-        self.udpstream = PcapUDPStream(pcapfilename)
+        self.udpstream = Pcap.Pcap(pcapfilename)
         self.pcapfilter = pcapfilter or {}
         extracriterion = set(self.pcapfilter.keys()) - set(RTPStream.filtercriterions)
         if extracriterion:
@@ -295,120 +297,21 @@ class RTPStream:
 
     def _generator(self):
         inittimestamp = None
-        for block in self.udpstream:
-            rtp = block.data
+        for packet in self.udpstream:
+            if not packet.udp:
+                continue
+            rtp = packet.data
             PT,SSRC = struct.unpack_from('!xB6xI', rtp);PT&=0x7f
-            params = dict(srcport=block.srcport, dstport=block.dstport, PT=PT, SSRC=SSRC)
+            params = dict(srcport=packet.udp.srcport, dstport=packet.udp.dstport, PT=PT, SSRC=SSRC)
             for k,v in self.pcapfilter.items():
                 if params[k] != v:
                     break
             else:
                 if inittimestamp is None:
-                    inittimestamp = block.timestamp
+                    inittimestamp = packet.timestamp
                     timestamp = 0
-                if block.timestamp - inittimestamp < timestamp or block.timestamp - inittimestamp > timestamp + 5:
-                    inittimestamp = block.timestamp - timestamp - 0.2
-                timestamp = block.timestamp - inittimestamp
+                if packet.timestamp - inittimestamp < timestamp or packet.timestamp - inittimestamp > timestamp + 5:
+                    inittimestamp = packet.timestamp - timestamp - 0.2
+                timestamp = packet.timestamp - inittimestamp
                 yield timestamp,rtp
         self.eof=True
-
-
-class PcapUDPStream:
-    Datagram = collections.namedtuple('Datagram', 'timestamp srcport dstport data')
-    def __init__(self, filename):
-        self.error = None
-        self.fp = open(filename, 'rb')
-        blocktype,blockdata = self.nextblock()
-        if blocktype != 0x0a0d0d0a or not self.decodeheader(blockdata):
-            raise Exception("{} is not a pcapng file".format(filename))
-
-    def __iter__(self):
-        while True:
-            if self.error:
-                return
-            blocktype,blockdata = self.nextblock()
-            if blocktype == 0x0a0d0d0a:
-                if not self.decodeheader(blockdata):
-                    return
-            elif blocktype == 1:
-                self.decodeinterface(blockdata)
-            elif blocktype == 6:
-                block = self.decodeenhancedpacket(blockdata)
-                if block:
-                    yield block
-            elif blocktype == None:
-                return
-
-    def nextblock(self):
-        buf = self.fp.read(8)
-        if len(buf) != 8:
-            self.error = "truncated block"
-            return None,None
-        blocktype,length = struct.unpack('=LL', buf)
-        if length%4 != 0:
-            self.error = "bad block length"
-            return None,None
-        blockdata = self.fp.read(length-12)
-        if len(blockdata) != length-12:
-            self.error = "truncated block"
-            return None,None
-        buf = self.fp.read(4)
-        if len(buf) != 4:
-            self.error = "truncated block"
-            return None,None
-        length2, = struct.unpack('=L', buf)
-        if length2 != length:
-            self.error = "incoherent block length"
-            return None,None
-        return blocktype, blockdata
-
-    def decodeheader(self, header):
-        bo,major,minor = struct.unpack_from('=LHH', header)
-        if minor != 0:
-            self.error = "bad minor version"
-        if major != 1:
-            self.error = "bad major version"
-        if bo != 0x1a2b3c4d:
-            self.error = "bad BO magic"
-        self.interfaces = []
-        return self.error is None
-
-    def decodeinterface(self, interface):
-        link, = struct.unpack_from('=H', interface)
-        self.interfaces.append(link)
-        for optioncode,optionvalue in self.decodeoptions(interface[8:]):
-            pass
-
-    def decodeenhancedpacket(self, packet):
-        interface,timestampH,timestampL,capturedlen,originallen = struct.unpack_from('=LLLLL', packet)
-        packet = packet[20:20+originallen]
-        if interface >= len(self.interfaces):
-            self.error = "unknown interface"
-            return
-        if self.interfaces[interface] != 1 or capturedlen != originallen:
-            return # not an Ethernet packet or truncated packet
-        if len(packet) != originallen:
-            self.error = "bad packet length"
-            return
-        ethertype, = struct.unpack_from('!h', packet, 12)
-        if ethertype != 0x800:
-            return # not an Ethernet/IPv4 packet
-        offsetdata = 4 * (packet[14] & 0x0f)
-        protocol = packet[23]
-        if protocol != 17:
-            return # not an Ethernet/IP/UDP
-        srcport,dstport = struct.unpack_from('!2H', packet, 14 + offsetdata)
-        data = packet[14 + offsetdata + 8:]
-        timestamp = ((timestampH<<32) + timestampL) * 10**-6
-        return PcapUDPStream.Datagram(timestamp, srcport, dstport, data)
-
-    def decodeoptions(self, options):
-        while True:
-            if len(options) < 4:
-                return
-            code,length = struct.unpack_from(options)
-            if len(options) < 4+length:
-                return
-            value = options[4:4+length]
-            options = options[4+length:]
-            yield code,value

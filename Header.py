@@ -7,6 +7,8 @@ import itertools
 log = logging.getLogger('Header')
 
 from . import SIPBNF
+from . import Utils
+
 
    
 #
@@ -232,10 +234,10 @@ class Header(metaclass=HeaderMeta):
             try:
                 if cls._multiple:
                     argsgenerator = cls._parse(value)
-                    headers = [cls(name, **args) for args in argsgenerator]
+                    headers = [cls(name=name, **args) for args in argsgenerator]
                 else:
                     args = cls._parse(value)
-                    headers = [cls(name, **args)]
+                    headers = [cls(name=name, **args)]
             except Exception as e:
                 log.warning("Parsing error on {!r}: {}".format(rawheader, e))
                 raise
@@ -298,12 +300,21 @@ class Authorization(Header):
     pass
 
 class Call_ID(Header):
-    pass
+    def __init__(self, callid, name=None):
+        super().__init__(name, callid=callid)
 
 #class Call_Info(Header):
 #    pass
 
-class Contact(Header):
+class CFT: # common constructor to Contact From To
+    def __init__(self, address, display=None, params={}, name=None):
+        if not isinstance(address, SIPBNF.URI):
+            address = SIPBNF.URI(address)
+        if not isinstance(params, Utils.ParameterDict):
+            params = Utils.ParameterDict(params)
+        Header.__init__(self, name, address=address, display=display, params=params)
+
+class Contact(CFT, Header):
     pass
 
 #class Content_Disposition(Header):
@@ -319,7 +330,13 @@ class Content_Length(Header):
     pass
 
 class Content_Type(Header):
-    pass
+    def __init__(self, type, subtype=None, params={}, name=None):
+        if subtype is None:
+            assert '/' in type
+            type,subtype = type.split('/', 1)
+        if not isinstance(params, Utils.ParameterDict):
+            params = Utils.ParameterDict(params)
+        super().__init__(name, type=type, subtype=subtype, params=params)
 
 class CSeq(Header):
     pass
@@ -333,7 +350,7 @@ class CSeq(Header):
 class Expires(Header):
     pass
 
-class From(Header):
+class From(CFT, Header):
     pass
 
 #class In_Reply_To(Header):
@@ -390,7 +407,7 @@ class Route(Header):
 #class Timestamp(Header):
 #    pass
 
-class To(Header):
+class To(CFT, Header):
     pass
 
 #class Unsupported(Header):

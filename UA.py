@@ -85,9 +85,9 @@ class UAbase(Transaction.TransactionManager):
         log.info("%s querying for capabilities", self)
         options = Message.OPTIONS(
             self.domain,
-            'From: {}'.format(self.addressofrecord),
-            'To: {}'.format(self.addressofrecord),
-            'Content-Type: application/sdp'
+            Header.From(self.addressofrecord),
+            Header.To(self.addressofrecord),
+            Header.Content_Type('application/sdp')
         )
         for result in self.sendmessage(options):
             if result.success:
@@ -128,9 +128,9 @@ class Registration(metaclass=Mixin):
         if self.registermessage is None:
             self.registermessage = Message.REGISTER(self.domain, *headers)
             self.registermessage.addheaders(
-                'From: {}'.format(self.addressofrecord),
-                'To: {}'.format(self.addressofrecord),
-                'Contact: {}'.format(self.contacturi),
+                Header.From(self.addressofrecord),
+                Header.To(self.addressofrecord),
+                Header.Contact(self.contacturi, params={'+g.3gpp.icsi-ref':"urn:urn-7:3gpp-service.ims.icsi.mmtel"}),
                 ifmissing=True
             )
         else:
@@ -282,8 +282,8 @@ class Session(metaclass=Mixin):
             touri = touri.addressofrecord
         invite = Message.INVITE(touri, *headers)
         invite.addheaders(
-            'From: {}'.format(self.addressofrecord),
-            'Contact: {}'.format(self.contacturi),
+            Header.From(self.addressofrecord),
+            Header.Contact(self.contacturi),
             ifmissing=True
         )
         media = self.mediaclass(ua=self, **self.mediaargs)
@@ -317,7 +317,7 @@ class Session(metaclass=Mixin):
                 return
 
     def askTU(self, invite):
-        return invite.response(200, 'Contact: {}'.format(self.contacturi))
+        return invite.response(200, Header.Contact(self.contacturi))
 
     def INVITE_handler(self, invite):
         ident = Dialog.UASid(invite)
@@ -361,10 +361,10 @@ class Session(metaclass=Mixin):
         log.info("%s closing locally", self)
         session.localseq += 1
         bye = Message.BYE(session.remotetarget,
-                         'call-id:{}'.format(session.callid),
-                         'from:<{}>;tag={}'.format(session.localuri, session.localtag),
-                         'to:<{}>;tag={}'.format(session.remoteuri, session.remotetag),
-                         'cseq: {} BYE'.format(session.localseq))
+                          Header.Call_ID(session.callid),
+                          Header.From(session.localuri, params=dict(tag=session.localtag)),
+                          Header.To(session.remoteuri, params=dict(tag=session.remotetag)),
+                          Header.CSeq(seq=session.localseq, method='BYE'))
         media.stop()
         for result in self.sendmessage(bye):
             if result.success:
