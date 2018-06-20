@@ -8,6 +8,7 @@ import multiprocessing.connection
 import random
 import socket
 import struct
+import datetime
 import ast
 import time
 import logging
@@ -222,7 +223,7 @@ class MediaProcess(multiprocessing.Process):
                 wakeuptime,rtp = rtpstream.nextpacket()
                 sock.sendto(rtp, remoteaddr)
                 log.info("%s %s:%-5d ---> %s:%-5d RTP(%s)", self, *sock.getsockname(), *remoteaddr, RTP.frombytes(rtp))
-                if wakeuptime < 0:
+                if wakeuptime is None:
                     transmitting = False
                     running = False
                     log.info("%s %s:%-5d ---| %s:%-5d EOS", self, *sock.getsockname(), *remoteaddr)
@@ -292,7 +293,7 @@ class RTPStream:
             wakeuptime,self.nextrtp = next(self.generator)
         except StopIteration:
             self.eof = True
-            return -1,rtp
+            return None,rtp
         return wakeuptime,rtp
 
     def _generator(self):
@@ -308,10 +309,10 @@ class RTPStream:
                     break
             else:
                 if inittimestamp is None:
-                    inittimestamp = packet.timestamp
-                    timestamp = 0
-                if packet.timestamp - inittimestamp < timestamp or packet.timestamp - inittimestamp > timestamp + 5:
-                    inittimestamp = packet.timestamp - timestamp - 0.2
-                timestamp = packet.timestamp - inittimestamp
-                yield timestamp,rtp
+                    inittimestamp = packet.metadata['timestamp']
+                    timestamp = datetime.timedelta()
+                if packet.metadata['timestamp'] - inittimestamp < timestamp or packet.metadata['timestamp'] - inittimestamp > timestamp + datetime.timedelta(seconds=5):
+                    inittimestamp = packet.metadata['timestamp'] - timestamp - datetime.timedelta(seconds=0.2)
+                timestamp = packet.metadata['timestamp'] - inittimestamp
+                yield timestamp.total_seconds(),rtp
         self.eof=True

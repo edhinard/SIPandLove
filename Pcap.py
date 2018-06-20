@@ -5,14 +5,16 @@ import sys
 import struct
 import collections
 import ipaddress
+import datetime
 
 class Packet:
     IP = collections.namedtuple('IP', 'src dst')
     ESP = collections.namedtuple('ESP', 'spi sequence')
     TCP = collections.namedtuple('TCP', 'srcport dstport')
     UDP = collections.namedtuple('UDP', 'srcport dstport')
-    def __init__(self, timestamp, src, dst, tcp=None, esp=None, udp=None, data=None):
-        self.timestamp = timestamp
+    def __init__(self, metadata, src, dst, tcp=None, esp=None, udp=None, data=None):
+        metadata['timestamp'] = datetime.datetime.fromtimestamp(metadata['timestamp']) 
+        self.metadata = metadata
         self.ip = Packet.IP(ipaddress.ip_address(src), ipaddress.ip_address(dst))
         self.esp = esp
         assert tcp or udp
@@ -84,20 +86,36 @@ class Pcap:
         return self.error is None
 
     def decodeinterface(self, interface):
-        link, = struct.unpack_from('=H', interface)
-        self.interfaces.append(link)
+        intf = dict(
+            linktype = struct.unpack_from('=H', interface)[0],
+            tsresol  = 10**-6)
         for optioncode,optionvalue in self.decodeoptions(interface[8:]):
-            pass
+            if optioncode == 9:
+                # time resolution
+                value = optionvalue[0]
+                if value & 0x80:
+                    tsresol = 2**-(value & 0x7f)
+                else:
+                    tsresol = 10**-value
+                intf['tsresol'] = tsresol
+            elif optioncode == 2:
+                intf['name'] = optionvalue.decode('utf-8')
+            elif optioncode == 11:
+                intf['filter'] = optionvalue
+            elif optioncode == 12:
+                intf['os'] = optionvalue.decode('utf-8')
+        self.interfaces.append(intf)
 
     def decodeenhancedpacket(self, packet):
         interface,timestampH,timestampL,capturedlen,originallen = struct.unpack_from('=LLLLL', packet)
-        timestamp = ((timestampH<<32) + timestampL) * 10**-6
         packet = packet[20:20+originallen]
         if interface >= len(self.interfaces):
             self.error = "unknown interface"
             return
-        if self.interfaces[interface] != 1 or capturedlen != originallen:
+        interface = self.interfaces[interface]
+        if interface['linktype'] != 1 or capturedlen != originallen:
             return # not an Ethernet packet or truncated packet
+        interface['timestamp'] = ((timestampH<<32) + timestampL) * interface['tsresol']
         if len(packet) != originallen:
             self.error = "bad packet length"
             return
@@ -122,19 +140,24 @@ class Pcap:
             srcport,dstport = struct.unpack_from('!2H', packet)
             dataoffset = (packet[12] & 0xf0) >> 2
             data = packet[dataoffset:]
-            return Packet(timestamp, srcip, dstip, esp=esp, tcp=dict(srcport=srcport, dstport=dstport), data=data)
+            return Packet(interface, srcip, dstip, esp=esp, tcp=dict(srcport=srcport, dstport=dstport), data=data)
         elif protocol == 17:
             srcport,dstport = struct.unpack_from('!2H', packet)
             data = packet[8:]
-            return Packet(timestamp, srcip, dstip, esp=esp, udp=dict(srcport=srcport, dstport=dstport), data=data)
+            return Packet(interface, srcip, dstip, esp=esp, udp=dict(srcport=srcport, dstport=dstport), data=data)
 
     def decodeoptions(self, options):
+        offset = 0
         while True:
             if len(options) < 4:
                 return
-            code,length = struct.unpack_from('=HH', options)
+            code,length = struct.unpack_from('=HH', options, offset)
+            if code == 0:
+                return
             if len(options) < 4+length:
                 return
-            value = options[4:4+length]
-            options = options[4+length:]
+            value = options[offset+4:offset+4+length]
+            offset += 4 * ((4+length) // 4)
+            if length % 4:
+                offset += 4
             yield code,value
