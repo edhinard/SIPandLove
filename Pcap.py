@@ -8,11 +8,13 @@ import ipaddress
 
 class Packet:
     IP = collections.namedtuple('IP', 'src dst')
+    ESP = collections.namedtuple('ESP', 'spi sequence')
     TCP = collections.namedtuple('TCP', 'srcport dstport')
     UDP = collections.namedtuple('UDP', 'srcport dstport')
-    def __init__(self, timestamp, src, dst, tcp=None, udp=None, data=None):
+    def __init__(self, timestamp, src, dst, tcp=None, esp=None, udp=None, data=None):
         self.timestamp = timestamp
         self.ip = Packet.IP(ipaddress.ip_address(src), ipaddress.ip_address(dst))
+        self.esp = esp
         assert tcp or udp
         if tcp:
             self.tcp = Packet.TCP(**tcp)
@@ -104,16 +106,27 @@ class Pcap:
             return # not an Ethernet/IPv4 packet
         IHL = 4 * (packet[14] & 0x0f)
         protocol = packet[23]
-        srcip,dstip = struct.unpack_from('=LL', packet, 26)
+        srcip,dstip = struct.unpack_from('!LL', packet, 26)
+        esp = None
+        packet = packet[14 + IHL:]
+        if protocol == 50:
+            # assuming null encryption and ICV is 12 bytes long
+            if len(packet) < 8 + 2 + 12:
+                return
+            spi,sequence = struct.unpack_from('!2L', packet)
+            protocol = packet[-13]
+            padlen = packet[-14]
+            packet = packet[8:-14-padlen]
+            esp = dict(spi=spi, sequence=sequence)
         if protocol == 6:
-            srcport,dstport = struct.unpack_from('!2H', packet, 14 + IHL)
-            dataoffset = (packet[14 + IHL + 12] & 0xf0) >> 2
-            data = packet[14 + IHL + dataoffset:]
-            return Packet(timestamp, srcip, dstip, tcp=dict(srcport=srcport, dstport=dstport), data=data)
+            srcport,dstport = struct.unpack_from('!2H', packet)
+            dataoffset = (packet[12] & 0xf0) >> 2
+            data = packet[dataoffset:]
+            return Packet(timestamp, srcip, dstip, esp=esp, tcp=dict(srcport=srcport, dstport=dstport), data=data)
         elif protocol == 17:
-            srcport,dstport = struct.unpack_from('!2H', packet, 14 + IHL)
-            data = packet[14 + IHL + 8:]
-            return Packet(timestamp, srcip, dstip, udp=dict(srcport=srcport, dstport=dstport), data=data)
+            srcport,dstport = struct.unpack_from('!2H', packet)
+            data = packet[8:]
+            return Packet(timestamp, srcip, dstip, esp=esp, udp=dict(srcport=srcport, dstport=dstport), data=data)
 
     def decodeoptions(self, options):
         while True:
