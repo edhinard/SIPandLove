@@ -13,8 +13,8 @@ from . import Tags
 from . import Security
 
 CRLF = b'\r\n'
-STATUS_LINE_RE = re.compile(b'(?:\r\n|^)SIP/2.0 (?P<code>[1-7]\d\d) (?P<reason>.+)\r\n', re.IGNORECASE)
-REQUEST_LINE_RE = re.compile(b'''(?:\r\n|^)(?P<method>[A-Za-z0-9.!%*_+`'~-]+) (?P<requesturi>[^ ]+) SIP/2.0\r\n''', re.IGNORECASE)
+STATUS_LINE_RE = re.compile(b'SIP/2.0 (?P<code>[1-7]\d\d) (?P<reason>.+)\r\n', re.IGNORECASE)
+REQUEST_LINE_RE = re.compile(b'''(?P<method>[A-Za-z0-9.!%*_+`'~-]+) (?P<requesturi>[^ ]+) SIP/2.0\r\n''', re.IGNORECASE)
 CONTENT_LENGTH_RE = re.compile(b'\r\n(?:Content-length|l)[ \t]*:\s*(?P<length>\d+)\s*\r\n', re.IGNORECASE)
 UNFOLDING_RE = re.compile(b'[ \t]*\r\n[ \t]+')
 class DecodeInfo:
@@ -27,7 +27,11 @@ class DecodeInfo:
         self.error = None
 
     def __str__(self):
-        return "decodeinfo: status={0.status} error={0.error} class={0.klass}".format(self)
+        if self.istart is not None and self.iend is not None:
+            displaybuf = bytes(self.buf[self.istart:self.istart+12] + b'...' +  self.buf[self.iend-12:self.iend])
+        else:
+            displaybuf = b''
+        return "decodeinfo: status={0.status} error={0.error} class={0.klass} start={0.istart} headers={0.iheaders} blank={0.iblank} body={0.ibody} end={0.iend} {1}".format(self, displaybuf)
 
     def finish(self):
         rawheaders=self.buf[self.iheaders:self.iblank]
@@ -55,6 +59,16 @@ class SIPMessage(object):
         log.debug("predecode(%r)", buf)
         decodeinfo = DecodeInfo(buf)
 
+        # Ignore leading CRLF
+        offset = 0
+        while buf[offset:].startswith(CRLF):
+            offset == 2
+
+        # Is there at least one line?
+        if CRLF not in buf:
+            log.debug(decodeinfo)
+            return decodeinfo
+
         # Valid messages:
         #  -valid status line + CRLF
         #  -optionals header, each ending with CRLF
@@ -62,9 +76,11 @@ class SIPMessage(object):
         #  -optional body
         
         # Decoding start-line
-        statusline = STATUS_LINE_RE.search(buf)
-        requestline = REQUEST_LINE_RE.search(buf)
+        statusline = STATUS_LINE_RE.match(buf, offset)
+        requestline = REQUEST_LINE_RE.match(buf, offset)
         if not statusline and not requestline:
+            decodeinfo.error = "Not a SIP message"
+            decodeinfo.status = 'ERROR'
             log.debug(decodeinfo)
             return decodeinfo
         s_start = statusline.start() if statusline else len(buf)
@@ -115,6 +131,8 @@ class SIPMessage(object):
                     decodeinfo.framing = True
                     if contentlength > decodeinfo.iend - decodeinfo.ibody:
                         decodeinfo.status = 'TRUNCATED'
+                    else:
+                       decodeinfo.iend =  decodeinfo.ibody + contentlength
 
         log.debug(decodeinfo)
         return decodeinfo
@@ -281,6 +299,9 @@ class SIPMessage(object):
 
     def tobytes(self, headerform='nominal'):
         return b'\r\n'.join(self.tolines(headerform) + [self.body])
+
+    def __bytes__(self):
+        return self.tobytes()
 
     def __str__(self):
         try:
