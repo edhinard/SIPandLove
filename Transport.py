@@ -35,7 +35,7 @@ class Transport(multiprocessing.Process):
         Transport.instances.add(instance)
         return instance
 
-    def __init__(self, *, interface=None, index=0, address=None, port=None, protocol='UDP+TCP', errorcb=None, sendcb=None, recvcb=None):
+    def __init__(self, *, interface=None, index=0, address=None, port=None, protocol='UDP+TCP', maxudp=1300, errorcb=None, sendcb=None, recvcb=None):
         self.started = False
         if interface:
             if address:
@@ -55,6 +55,7 @@ class Transport(multiprocessing.Process):
         self.protocol = protocol.upper()
         if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
             raise Exception("bad value for protocol transport: {}".format(protocol))
+        self.maxudp = maxudp
         self.errorcb = errorcb
         self.sendcb = sendcb
         self.recvcb = recvcb
@@ -90,30 +91,32 @@ class Transport(multiprocessing.Process):
         return "{}:{}".format(self.localip, self.localport)
 
     def send(self, message, addr=None):
-        assert isinstance(message, Message.SIPMessage)
+        issip = isinstance(message, Message.SIPMessage)
+        isrequest = isinstance(message, Message.SIPRequest)
+        isresponse = isinstance(message, Message.SIPResponse)
 
-        if message.contacturi:
+        if issip and message.contacturi:
             if self.protocol == 'UDP+TCP':
                 message.contacturi.params.pop('transport', None)
             else:
                 message.contacturi.params['transport'] = self.protocol
 
-        if isinstance(message, Message.SIPRequest):
+        if (not issip) or isrequest:
             assert addr
             dstip,dstport = addr
             protocol = self.protocol
             if protocol == 'TLS':
                 dstport = dstport or 5061
-                message.length = len(message.body)
-                pass
+                if issip:
+                    message.length = len(message.body)
             else:
                 dstport = dstport or 5060
                 if protocol == 'UDP+TCP':
-                    if len(message.tobytes()) > 1300:
+                    if self.maxudp is not None and len(bytes(message)) > self.maxudp:
                         protocol = 'TCP'
                     else:
                         protocol = 'UDP'
-                if protocol == 'TCP':
+                if protocol == 'TCP' and issip:
                     message.length = len(message.body)
 
                 if self.establishedSA:
@@ -138,13 +141,13 @@ class Transport(multiprocessing.Process):
                         viaport = srcport = self.localport
                         addr = (dstip, dstport)
 
-                via = message.header('via')
+                via = message.header('via') if issip else None
                 if via:
                     via.protocol = protocol[:3]
                     via.host = self.localip
                     via.port = viaport if viaport!=5060 else None
 
-        elif isinstance(message, Message.SIPResponse):
+        elif isresponse:
             assert addr is None
             via = message.header('via')
             if via:
@@ -182,10 +185,11 @@ class Transport(multiprocessing.Process):
                         srcport = self.localport
                         addr = (dstip, dstport)
 
-        if self.sendcb:
+        if issip and self.sendcb:
             self.sendcb(message)
+
         log.info("%s:%d --%s-> %s:%d (fd=%d)\n%s", self.localip, srcport, protocol, dstip, dstport, fd, message)
-        self.messagepipe.send((fd, addr, message.tobytes()))
+        self.messagepipe.send((fd, addr, bytes(message)))
 
     def recv(self, timeout=None):
         if self.messagepipe.poll(timeout):

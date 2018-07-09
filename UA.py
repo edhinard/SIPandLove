@@ -81,6 +81,9 @@ class UAbase(Transaction.TransactionManager):
             if result.provisional is None:
                 return
 
+    def send(self, message):
+            self.transport.send(message, self.proxy)
+
     def options(self):
         log.info("%s querying for capabilities", self)
         options = Message.OPTIONS(
@@ -180,6 +183,7 @@ class Authentication(metaclass=Mixin):
         self.sa = None
         self.savedproxy = None
         self.saheaders = []
+
     def sendmessage(self, message):
         needsecurity = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
         if needsecurity and self.sa is None:
