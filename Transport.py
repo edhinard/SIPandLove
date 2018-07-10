@@ -35,26 +35,31 @@ class Transport(multiprocessing.Process):
         Transport.instances.add(instance)
         return instance
 
-    def __init__(self, *, interface=None, index=0, address=None, port=None, protocol='UDP+TCP', maxudp=1300, errorcb=None, sendcb=None, recvcb=None):
+    def __init__(self, *, interface=None, address=None, port=None, protocol='UDP+TCP', maxudp=1300, errorcb=None, sendcb=None, recvcb=None):
         self.started = False
         if interface:
-            if address:
-                raise Exception("cannot set both interface and address for transport")
             interfaces = Utils.getinterfaces()
             if interface not in interfaces:
-                raise Exception("unknown interface {}".format(interface))
-            try:
-                self.localip = interfaces[interface][index]
-            except:
-                raise Exception("bad index {} for transport interface. Expecting an integer in [0-{}]".format(index, len(interfaces[interface])-1)) from None
+                log.logandraise(Exception("unknown interface {}".format(interface)))
+            if isinstance(address, int):
+                try:
+                    self.localip = interfaces[interface][address]
+                except:
+                    log.logandraise(Exception("bad integer value for address ({}). Expecting an integer in [0-{}]".format(address, len(interfaces[interface])-1)))
+            elif address is not None:
+                if address not in interfaces[interface]:
+                    log.logandraise(Exception("address {} is not attached to interface {}".format(address, interface)))
+                self.localip = address
+            else:
+                self.localip = interfaces[interface][0]
         elif address:
             self.localip = address
         else:
-            raise Exception("missing interface or address parameter for transport")
+            log.logandraise(Exception("missing 'interface' or 'address' parameter for transport"))
         self.localport = port
         self.protocol = protocol.upper()
         if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
-            raise Exception("bad value for protocol transport: {}".format(protocol))
+            log.logandraise(Exception("bad value for protocol transport: {}".format(protocol)))
         self.maxudp = maxudp
         self.errorcb = errorcb
         self.sendcb = sendcb
@@ -81,8 +86,7 @@ class Transport(multiprocessing.Process):
             if self.protocol == 'TLS':
                 pass
         except Exception as e:
-            log.error("%s - %s", self, e)
-            raise
+            log.logandraise(e)
 
         self.localsa = self.remotesa = None
         self.establishedSA = False
@@ -379,6 +383,11 @@ class Transport(multiprocessing.Process):
                             # Erroneous messages or messages missing a Content-Length make the stream desynchronized
                             if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and not decodeinfo.framing):
                                 obj.close()
+                                break
+
+                            # Flush buffer if filled with CRLF
+                            if decodeinfo.status != 'EMPTY':
+                                del buf[:]
                                 break
 
                             # Ignore inconsistent messages, wait for the rest of the buffer

@@ -112,6 +112,7 @@ class Mixin(type):
 class Registration(metaclass=Mixin):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.registered = False
         self.registermessage = None
         self.regtimer = None
 
@@ -150,9 +151,11 @@ class Registration(metaclass=Mixin):
                 if contactheader:
                     gotexpires = contactheader.params.get('expires')
                 if gotexpires > 0:
+                    self.registered = True
                     log.info("%s registered for %ds", self, gotexpires)
                     self.regtimer = Timer.arm(gotexpires//2, self.register, expires, async=True)
                 else:
+                    self.registered = False
                     self.registermessage = None
                     log.info("%s unregistered", self)
                 return result.success
@@ -416,7 +419,7 @@ class Cancelation(metaclass=Mixin):
 
 def SIPPhoneClass(features=UAfeatures.keys(), extensions=[]):
     if 'sec-agree' in extensions and not Security.SEC_AGREE:
-        raise Exception('sec-agree is not possible. try to run script as root')
+        log.logandraise(Exception('sec-agree is not possible. try to run script as root'))
     ext = extensions
 
     if isinstance(features, str):
@@ -428,7 +431,7 @@ def SIPPhoneClass(features=UAfeatures.keys(), extensions=[]):
             try:
                 mixin = UAfeatures[feature]
             except:
-                raise Exception("unknown feature {}".format(feature)) from None
+                log.logandraise(Exception("unknown feature {}".format(feature)))
         else:
             mixin = feature
         class newcls(mixin, cls):

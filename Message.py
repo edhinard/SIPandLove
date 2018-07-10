@@ -20,7 +20,7 @@ UNFOLDING_RE = re.compile(b'[ \t]*\r\n[ \t]+')
 class DecodeInfo:
     def __init__(self, buf):
         self.buf = buf
-        self.status = 'UNFINISHED'
+        self.status = None
         self.klass = None; self.startline = None;
         self.istart = None; self.iheaders = None; self.iblank = None; self.ibody = None; self.iend = None
         self.framing = False
@@ -62,10 +62,16 @@ class SIPMessage(object):
         # Ignore leading CRLF
         offset = 0
         while buf[offset:].startswith(CRLF):
-            offset == 2
+            offset += 2
+
+        if offset == len(buf):
+            decodeinfo.status = 'EMPTY'
+            log.debug(decodeinfo)
+            return decodeinfo
 
         # Is there at least one line?
-        if CRLF not in buf:
+        if CRLF not in buf[offset:]:
+            decodeinfo.status = 'TRUNCATED'
             log.debug(decodeinfo)
             return decodeinfo
 
