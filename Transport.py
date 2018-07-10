@@ -52,7 +52,9 @@ class Transport(multiprocessing.Process):
                 self.localip = address
             else:
                 self.localip = interfaces[interface][0]
-        elif address:
+        elif address is not None:
+            if not isinstance(address, str):
+                log.logandraise(Exception('expecting an IP address not {}'.format(address)))
             self.localip = address
         else:
             log.logandraise(Exception("missing 'interface' or 'address' parameter for transport"))
@@ -283,8 +285,9 @@ class Transport(multiprocessing.Process):
                                 tcplisteningsocket.bind(localaddr)
                                 tcplisteningsocket.listen()
                                 self.childcommandpipe.send(tcplisteningsocket.fileno())
-                            except OSError as err:
-                                exc = Exception("cannot bind TCP socket to {}:{}. errno={}".format(*localaddr, errno.errorcode[err.errno]))
+                            except Exception as err:
+                                extra = ". errno={}".format(errno.errorcode[err.errno]) if isinstance(err, OSError) else ''
+                                exc = Exception("cannot bind TCP socket to {}:{}{}".format(*localaddr, extra))
                                 tcplisteningsocket.close()
                                 tcplisteningsocket = None
                                 self.childcommandpipe.send(exc)
@@ -294,8 +297,9 @@ class Transport(multiprocessing.Process):
                                 mainudp.bind(localaddr)
                                 servicesockets.new(mainudp)
                                 self.childcommandpipe.send(mainudp.fileno())
-                            except OSError as err:
-                                exc = Exception("cannot bind UDP socket to {}:{}. errno={}".format(*localaddr, errno.errorcode[err.errno]))
+                            except Exception as err:
+                                extra = ". errno={}".format(errno.errorcode[err.errno]) if isinstance(err, OSError) else ''
+                                exc = Exception("cannot bind UDP socket to {}:{}{}".format(*localaddr, extra))
                                 self.childcommandpipe.send(exc)
                     elif command[0] == 'gettcp':
                         remoteaddr,fd = command[1:]
@@ -386,7 +390,8 @@ class Transport(multiprocessing.Process):
                                 break
 
                             # Flush buffer if filled with CRLF
-                            if decodeinfo.status != 'EMPTY':
+                            if decodeinfo.status == 'EMPTY':
+                                log.info("%s:%s <-TCP-- %s:%d (fd=%d)\n%s", obj.localip, obj.localport, *remoteaddr, obj.fd, bytes(buf))
                                 del buf[:]
                                 break
 
@@ -407,6 +412,7 @@ class ServiceSocket:
             sock = sock,
             pool = pool,
             fd = sock.fileno(),
+            localip = sock.getsockname()[0],
             localport = sock.getsockname()[1],
             tcp = bool(sock.type & socket.SOCK_STREAM),
             udp = bool(sock.type & socket.SOCK_DGRAM)
@@ -553,7 +559,7 @@ if __name__ == '__main__':
     import snl
     snl.loggers['Transport'].setLevel('INFO')
 
-    t = snl.Transport('eno1', localport=5061, tcp_only=True)
+    t = snl.Transport(interface='eno1', port=5061, protocol='tcp')
     t.send(snl.REGISTER('sip:osk.nokims.eu',
                             'From:sip:+33900821220@osk.nokims.eu',
                             'To:sip:+33900821220@osk.nokims.eu'),
