@@ -87,8 +87,9 @@ class Transport(multiprocessing.Process):
                 log.info("TCP listening on %s:%d (fd=%d)", self.localip, self.localport, fd)
             if self.protocol == 'TLS':
                 pass
-        except Exception as e:
-            log.logandraise(e)
+        except:
+            self.stop()
+            raise
 
         self.localsa = self.remotesa = None
         self.establishedSA = False
@@ -224,12 +225,15 @@ class Transport(multiprocessing.Process):
         self.commandpipe.send(args)
         ret = self.commandpipe.recv()
         if isinstance(ret, Exception):
-            raise ret
+            log.logandraise(ret)
         return ret
 
     def stop(self):
         if self.started:
             self.commandpipe.send(('stop',))
+            self.started = False
+            log.info("%s process %d stopped", self, self.pid)
+
 
     def openmainUDP(self):
         fd = self.command('main', 'udp')

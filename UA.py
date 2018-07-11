@@ -32,20 +32,27 @@ class UAbase(Transaction.TransactionManager):
             if port is not None:
                 transport['port'] = port
         super().__init__(transport, T1, T2, T4)
-        if isinstance(proxy, str):
-            if ':' in proxy:
-                self.proxy = proxy.split(':', 1)
+        try:
+            if isinstance(proxy, str):
+                if ':' in proxy:
+                    prox = proxy.split(':', 1)
+                    self.proxy = (prox[0], int(prox[1]))
+                else:
+                    self.proxy = (proxy, None)
             else:
-                self.proxy = (proxy, None)
-        else:
-            assert isinstance(proxy, (list,tuple))
-            assert len(proxy) == 2
-            self.proxy = tuple(proxy)
+                assert isinstance(proxy, (list,tuple))
+                assert len(proxy) == 2
+                self.proxy = tuple(proxy)
+        except:
+            log.logandraise(Exception('invalid proxy definition {!r}'.format(proxy)))
         self.domain = domain
         self.addressofrecord = addressofrecord
         self.contacturi = SIPBNF.URI(self.addressofrecord)
         self.contacturi.host = self.transport.localip
         self.contacturi.port = self.transport.localport
+
+    def cleanup(self):
+        self.transport.stop()
 
     def __str__(self):
         return str(self.contacturi)
