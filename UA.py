@@ -51,7 +51,7 @@ class UAbase(Transaction.TransactionManager):
         self.contacturi.host = self.transport.localip
         self.contacturi.port = self.transport.localport
 
-    def cleanup(self):
+    def destroy(self):
         self.transport.stop()
 
     def __str__(self):
@@ -123,12 +123,16 @@ class Registration(metaclass=Mixin):
         self.registermessage = None
         self.regtimer = None
 
-    def register(self, expires=3600, *headers, async=False):
+    def register(self, expires=3600, *headers, async=False, reregister=0.5):
+        if not isinstance(reregister, (int, float)):
+            raise TypeError('expecting a number not {!r}'.format(reregister))
+        if reregister<0 or reregister>1:
+            raise ValueError('expecting a number in [0. - 1.]. got {}'.format(reregister))
         if not async:
-            return self._register(expires, *headers)
-        threading.Thread(target=self._register, args=(expires,*headers), daemon=True).start()
+            return self._register(expires, *headers, reregister=reregister)
+        threading.Thread(target=self._register, args=(expires,*headers), kwargs=dict(reregister=reregister), daemon=True).start()
 
-    def _register(self, expires=3600, *headers):
+    def _register(self, expires, *headers, reregister):
         Timer.unarm(self.regtimer)
 
         if expires > 0:
@@ -160,7 +164,8 @@ class Registration(metaclass=Mixin):
                 if gotexpires > 0:
                     self.registered = True
                     log.info("%s registered for %ds", self, gotexpires)
-                    self.regtimer = Timer.arm(gotexpires//2, self.register, expires, async=True)
+                    if reregister:
+                        self.regtimer = Timer.arm(gotexpires*reregister, self.register, expires, async=True, reregister=reregister)
                 else:
                     self.registered = False
                     self.registermessage = None
@@ -251,8 +256,8 @@ class Authentication(metaclass=Mixin):
             else:
                 yield result
 
-    def _register(self, expires=3600, *headers):
-        result = super()._register(expires, *headers)
+    def _register(self, expires=3600, *headers, reregister):
+        result = super()._register(expires, *headers, reregister=reregister)
         if expires==0 and result and self.sa:
             self.transport.terminateSA()
             self.sa = None

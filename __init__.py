@@ -75,7 +75,7 @@ mainloghandler.setFormatter(mainlogformatter)
 log = logging.getLogger('Main')
 log.setLevel('INFO')
 log.addHandler(mainloghandler)
-log.error("{:#^66}".format("< SipAndLove >"))
+log.error("{:#^66}".format("< SIPandLove >"))
 
 
 from .SIPBNF import URI

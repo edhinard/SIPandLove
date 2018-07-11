@@ -79,6 +79,8 @@ class TransactionManager(threading.Thread):
     def run(self):
         while True:
             message = self.transport.recv()
+            if message is None: # happens when transport process is terminated
+                break
             transaction = self.transactionmatching(message)
             if transaction:
                 transaction.eventmessage(message)

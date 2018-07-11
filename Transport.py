@@ -200,7 +200,10 @@ class Transport(multiprocessing.Process):
 
     def recv(self, timeout=None):
         if self.messagepipe.poll(timeout):
-            fd,protocol,(srcip,srcport),dstport,message = self.messagepipe.recv()
+            try:
+                fd,protocol,(srcip,srcport),dstport,message = self.messagepipe.recv()
+            except:
+                return None
             message = Message.SIPMessage.frombytes(message)
             if message is not None:
                 message.fd = fd
@@ -232,8 +235,11 @@ class Transport(multiprocessing.Process):
         if self.started:
             self.commandpipe.send(('stop',))
             self.started = False
+            self.messagepipe.close()
+            self.childmessagepipe.close()
+            self.commandpipe.close()
+            self.childcommandpipe.close()
             log.info("%s process %d stopped", self, self.pid)
-
 
     def openmainUDP(self):
         fd = self.command('main', 'udp')
@@ -276,9 +282,18 @@ class Transport(multiprocessing.Process):
                 if obj == self.childcommandpipe:
                     command = self.childcommandpipe.recv()
                     if command[0] == 'stop':
+                        if tcplisteningsocket:
+                            tcplisteningsocket.close()
+                        if mainudp:
+                            mainudp.close()
+                        servicesockets.flush()
                         if sa:
                             sa.terminate()
                         self.childcommandpipe.send(None)
+                        self.messagepipe.close()
+                        self.childmessagepipe.close()
+                        self.commandpipe.close()
+                        self.childcommandpipe.close()
                         return
                     elif command[0] == 'main':
                         layer4, = command[1:]
@@ -472,6 +487,10 @@ class ServiceSockets(list):
         for sock in self.copy():
             if sock.tcp and currenttime - sock.touchtime > self.TIMEOUT:
                 sock.close()
+
+    def flush(self):
+        for sock in self.copy():
+            sock.close()
 
 
 class ErrorDispatcher(threading.Thread):
