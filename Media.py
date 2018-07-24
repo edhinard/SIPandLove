@@ -39,7 +39,7 @@ class Media(threading.Thread):
         17:('DVI4/22050',  None),
         18:('G729/8000',   None)}
 
-    def __init__(self, *, ua, ip=None, port=None, pcapfilename=None, pcapfilter=None):
+    def __init__(self, *, ua, ip=None, port=None, pcapfilename=None, pcapfilter=None, loop=False):
         self.ua = ua
         self.stopped = False
         self.localip = ip or ua.transport.localip
@@ -49,6 +49,7 @@ class Media(threading.Thread):
         self.remoteport = None
         self.pcapfilename = pcapfilename
         self.pcapfilter = pcapfilter
+        self.loop = loop
         self.codecs = [(payloadtype, codecname, codecformat) for payloadtype,(codecname, codecformat) in Media.defaultcodecs.items()]
 
         self.lock = multiprocessing.Lock()
@@ -97,7 +98,7 @@ class Media(threading.Thread):
         return True
 
     def starttransmit(self):
-        self.pipe.send(('starttransmit',((self.remoteip, self.remoteport), (self.pcapfilename, self.pcapfilter))))
+        self.pipe.send(('starttransmit',((self.remoteip, self.remoteport), (self.pcapfilename, self.pcapfilter), self.loop)))
         ackorexc = self.pipe.recv()
         if isinstance(ackorexc, Exception):
             log.error("%s %s", self.process, ackorexc)
@@ -166,7 +167,7 @@ class MediaProcess(multiprocessing.Process):
                     #  -opensocket + localaddr:
                     #     create socket, bind it and
                     #     return its local port
-                    #  -starttransmit + remoteaddr + pcap:
+                    #  -starttransmit + remoteaddr + pcap + loop:
                     #     start transmitting
                     #     return ack
                     #  -stop:
@@ -198,7 +199,7 @@ class MediaProcess(multiprocessing.Process):
                                 log.info("%s start listenning on %s:%d", self, *sock.getsockname())
 
                     elif command == 'starttransmit':
-                        remoteaddr,pcap = param
+                        remoteaddr,pcap,loop = param
                         try:
                             rtpstream = RTPStream(*pcap)
                         except Exception as exc:
@@ -224,9 +225,16 @@ class MediaProcess(multiprocessing.Process):
                 sock.sendto(rtp, remoteaddr)
                 log.info("%s %s:%-5d ---> %s:%-5d RTP(%s)", self, *sock.getsockname(), *remoteaddr, RTP.frombytes(rtp))
                 if wakeuptime is None:
-                    transmitting = False
-                    running = False
-                    log.info("%s %s:%-5d ---| %s:%-5d EOS", self, *sock.getsockname(), *remoteaddr)
+                    if loop:
+                        if not isinstance(loop, bool):
+                            loop -= 1
+                        rtpstream = RTPStream(*pcap)
+                        refrtptime = time.monotonic()
+                        wakeuptime = time.monotonic()
+                    else:
+                        transmitting = False
+                        running = False
+                        log.info("%s %s:%-5d ---| %s:%-5d EOS", self, *sock.getsockname(), *remoteaddr)
                 else:
                     wakeuptime += refrtptime
         # end of while running
