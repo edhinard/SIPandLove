@@ -213,10 +213,10 @@ class Transport(multiprocessing.Process):
     def recv(self, timeout=None):
         if self.messagepipe.poll(timeout):
             try:
-                fd,protocol,(srcip,srcport),dstport,message = self.messagepipe.recv()
+                fd,protocol,(srcip,srcport),dstport,decodeinfo = self.messagepipe.recv()
             except:
                 return None
-            message = Message.SIPMessage.frombytes(message)
+            message = decodeinfo.finish()
             if message is not None:
                 message.fd = fd
                 if isinstance(message, Message.SIPRequest):
@@ -408,8 +408,7 @@ class Transport(multiprocessing.Process):
                         if decodeinfo.status != 'OK':
                             continue
 
-                        messagebytes = buf[decodeinfo.istart:decodeinfo.iend]
-                        self.childmessagepipe.send((obj.fd,'UDP',remoteaddr,obj.localport,messagebytes))
+                        self.childmessagepipe.send((obj.fd,'UDP',remoteaddr,obj.localport,decodeinfo))
 
                     elif obj.tcp:
                         # assemble with previous buffer stored in TCPSocket
@@ -423,16 +422,16 @@ class Transport(multiprocessing.Process):
 
                             # Flush buffer if filled with CRLF
                             if decodeinfo.status == 'EMPTY':
-                                log.info("%s:%s <-TCP-- %s:%d (fd=%d)\n%s", obj.localip, obj.localport, *remoteaddr, obj.fd, bytes(buf))
-                                del buf[:]
+                                if buf:
+                                    log.info("%s:%s <-TCP-- %s:%d (fd=%d)\n%s", obj.localip, obj.localport, *remoteaddr, obj.fd, bytes(buf))
+                                    del buf[:]
                                 break
 
                             # Ignore inconsistent messages, wait for the rest of the buffer
                             if decodeinfo.status != 'OK':
                                 break
 
-                            messagebytes = buf[decodeinfo.istart:decodeinfo.iend]
-                            self.childmessagepipe.send((obj.fd,'TCP',remoteaddr,obj.localport,messagebytes))
+                            self.childmessagepipe.send((obj.fd,'TCP',remoteaddr,obj.localport,decodeinfo))
                             del buf[:decodeinfo.iend]
 
                 servicesockets.cleanup()
