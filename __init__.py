@@ -80,6 +80,7 @@ log.error("{:#^66}".format("< SIPandLove >"))
 
 from .SIPBNF import URI
 from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
+from .Transport import Transport
 from .UA import SIPPhoneClass, UAfeatures
 from .Media import Media
 from .Pcap import Pcap

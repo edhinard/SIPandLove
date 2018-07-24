@@ -35,7 +35,7 @@ class Transport(multiprocessing.Process):
         Transport.instances.add(instance)
         return instance
 
-    def __init__(self, *, interface=None, address=None, port=None, protocol='UDP+TCP', maxudp=1300, errorcb=None, sendcb=None, recvcb=None):
+    def __init__(self, *, interface=None, address=None, port=None, behindnat=None, protocol='UDP+TCP', maxudp=1300, errorcb=None, sendcb=None, recvcb=None):
         self.started = False
         if interface:
             interfaces = Utils.getinterfaces()
@@ -59,6 +59,14 @@ class Transport(multiprocessing.Process):
         else:
             log.logandraise(Exception("missing 'interface' or 'address' parameter for transport"))
         self.localport = port
+        if isinstance(behindnat, str):
+            if ':' in behindnat:
+                nat = behindnat.split(':', 1)
+                self.behindnat = (nat[0], int(nat[1]))
+            else:
+                self.behindnat = (behindnat, None)
+        else:
+            self.behindnat = behindnat
         self.protocol = protocol.upper()
         if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
             log.logandraise(Exception("bad value for protocol transport: {}".format(protocol)))
@@ -151,8 +159,12 @@ class Transport(multiprocessing.Process):
                 via = message.header('via') if issip else None
                 if via:
                     via.protocol = protocol[:3]
-                    via.host = self.localip
-                    via.port = viaport if viaport!=5060 else None
+                    if self.behindnat:
+                         via.host,via.port = self.behindnat
+                         via.params['rport']=None
+                    else:
+                        via.host = self.localip
+                        via.port = viaport if viaport!=5060 else None
 
         elif isresponse:
             assert addr is None
@@ -271,6 +283,7 @@ class Transport(multiprocessing.Process):
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         localaddr = (self.localip, self.localport)
         tcplisteningsocket = None
+        mainudp = None
         servicesockets = ServiceSockets()
         sa = None
         while True:
