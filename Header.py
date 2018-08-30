@@ -212,7 +212,7 @@ class Header(metaclass=HeaderMeta):
         value = Header.UNFOLDING_RE.sub(b' ', value)
         if value[0] == b'#'[0]:
             #
-            # A value strating with a # is not parse
+            # A value starting with a # is not parsed
             #
             cls = None
             value = value[1:]

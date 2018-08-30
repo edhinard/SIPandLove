@@ -269,7 +269,10 @@ class SIPMessage(object):
     def _getcallid(self):
         c = self.header('Call-Id')
         if c:
-            return c.callid
+#            if hasattr(c, 'callid'):
+                return c.callid
+#            else:
+#                return c.value
     def _setcallid(self, cid):
         c = self.header('Call-Id')
         if c:
@@ -368,10 +371,16 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             ifmissing=True
         )
         self.branch = Tags.branch()
-        if self.callid is None:
-            self.callid = Tags.callid()
-        if self.fromtag is None:
-            self.fromtag = Tags.fromto()
+        try:
+            if self.callid is None:
+                self.callid = Tags.callid()
+        except:
+            pass
+        try:
+            if self.fromtag is None:
+                self.fromtag = Tags.fromto()
+        except:
+            pass
 
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')

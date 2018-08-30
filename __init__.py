@@ -59,6 +59,7 @@ for submodule,level in (('Header',      'WARNING'),
                         ('Security',    'WARNING'),
                         ('Transaction', 'WARNING'),
                         ('Media',       'WARNING'),
+                        ('MSRP',        'WARNING'),
                         ('Dialog',      'INFO'),
                         ('Transport',   'INFO'),
                         ('UA',          'INFO')):
@@ -83,4 +84,6 @@ from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,C
 from .Transport import Transport
 from .UA import SIPPhoneClass, UAfeatures
 from .Media import Media
+from .MSRP import MSRP
 from .Pcap import Pcap
+from . import Header
