@@ -5,6 +5,8 @@ import random
 import logging
 import time
 import threading
+import weakref
+import atexit
 log = logging.getLogger('UA')
 
 from . import SIPBNF
@@ -109,30 +111,47 @@ class UAbase(Transaction.TransactionManager):
             elif result.exception:
                 log.info("%s querying failed: %s", self, result.exception)
 
-UAfeatures = Utils.ParameterDict() # ordered and case-insensitive keys
-class Mixin(type):
-    def __new__(cls, name, bases, namespace, **kwds):
-        mixin = type.__new__(cls, name, bases, namespace)
-        UAfeatures[name] = mixin
-        return mixin
+tobeunregistered = weakref.WeakSet()
+@atexit.register
+def unregisterphones():
+    global tobeunregistered
+    for phone in tobeunregistered:
+        if phone.registered:
+            phone.register(0)
 
-class Registration(metaclass=Mixin):
-    def __init__(self, **kwargs):
+class Registration:
+    def __init__(self, registration={}, **kwargs):
+        self.autoreg = registration.pop('autoreg', True)
+        self.autounreg = registration.pop('autounreg', True)
+        self.reregister = registration.pop('reregister', 0.5)
+        if not isinstance(self.reregister, (int, float)):
+            raise TypeError('expecting a number for reregister not {!r}'.format(self.reregister))
+        if self.reregister<0 or self.reregister>1:
+            raise ValueError('expecting a number in [0. - 1.] for reregister. got {}'.format(self.reregister))
+        self.expires = registration.pop('expires', 3600)
+        if not isinstance(self.expires, (int, float)):
+            raise TypeError('expecting a number for expires not {!r}'.format(self.expires))
+        if registration:
+            raise ValueError('unexpecting registration parameters {}'.format(registration))
         super().__init__(**kwargs)
         self.registered = False
         self.registermessage = None
         self.regtimer = None
 
-    def register(self, expires=3600, *headers, async=False, reregister=0.5):
-        if not isinstance(reregister, (int, float)):
-            raise TypeError('expecting a number not {!r}'.format(reregister))
-        if reregister<0 or reregister>1:
-            raise ValueError('expecting a number in [0. - 1.]. got {}'.format(reregister))
-        if not async:
-            return self._register(expires, *headers, reregister=reregister)
-        threading.Thread(target=self._register, args=(expires,*headers), kwargs=dict(reregister=reregister), daemon=True).start()
+        if self.autoreg:
+            self.register()
 
-    def _register(self, expires, *headers, reregister):
+        global tobeunregistered
+        if self.autounreg:
+            tobeunregistered.add(self)
+
+    def register(self, expires=None, *headers, async=False):
+        expires = expires if expires is not None else self.expires
+        if not async:
+            return self._register(expires, *headers)
+        threading.Thread(target=self._register, args=(expires,*headers), daemon=True).start()
+
+    def _register(self, expires, *headers):
         Timer.unarm(self.regtimer)
 
         if expires > 0:
@@ -164,8 +183,8 @@ class Registration(metaclass=Mixin):
                 if gotexpires > 0:
                     self.registered = True
                     log.info("%s registered for %ds", self, gotexpires)
-                    if reregister:
-                        self.regtimer = Timer.arm(gotexpires*reregister, self.register, expires, async=True, reregister=reregister)
+                    if self.reregister:
+                        self.regtimer = Timer.arm(gotexpires*self.reregister, self.register, expires, *headers, async=True)
                 else:
                     self.registered = False
                     self.registermessage = None
@@ -191,13 +210,13 @@ class Registration(metaclass=Mixin):
                 return None
 
 
-class Authentication(metaclass=Mixin):
+class Authentication:
     def __init__(self, credentials=None, **kwargs):
-        super().__init__(**kwargs)
         self.credentials = credentials
         self.sa = None
         self.savedproxy = None
         self.saheaders = []
+        super().__init__(**kwargs)
 
     def sendmessage(self, message):
         needsecurity = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
@@ -256,8 +275,8 @@ class Authentication(metaclass=Mixin):
             else:
                 yield result
 
-    def _register(self, expires=3600, *headers, reregister):
-        result = super()._register(expires, *headers, reregister=reregister)
+    def _register(self, expires=3600, *headers):
+        result = super()._register(expires, *headers)
         if expires==0 and result and self.sa:
             self.transport.terminateSA()
             self.sa = None
@@ -268,13 +287,13 @@ class Authentication(metaclass=Mixin):
             self.contacturi.port = self.transport.localport
         return result
 
-class Session(metaclass=Mixin):
+class Session:
     def __init__(self, mediaclass=Media.Media, mediaargs={}, **kwargs):
-        super().__init__(**kwargs)
         self.mediaclass = mediaclass
         self.mediaargs = mediaargs
         self.sessions = []
         self.lock = threading.Lock()
+        super().__init__(**kwargs)
 
     def addsession(self, session, media):
         with self.lock:
@@ -414,7 +433,7 @@ class Session(metaclass=Mixin):
         return bye.response(200)
 
 
-class Cancelation(metaclass=Mixin):
+class Cancelation:
     def CANCEL_handler(self, cancel):
         transaction = self.transactionmatching(cancel, matchonbranch=True)
         if transaction:
@@ -428,41 +447,29 @@ class Cancelation(metaclass=Mixin):
         log.info("%s invalid cancelation from %s", self, cancel.fromaddr)
         return cancel.response(481)
 
-
-def SIPPhoneClass(features=UAfeatures.keys(), extensions=[]):
+classcache = {}
+def SIPPhoneClass(extensions=set()):
     if 'sec-agree' in extensions and not Security.SEC_AGREE:
         log.logandraise(Exception('sec-agree is not possible. try to run script as root'))
-    ext = extensions
+    ext = frozenset(extensions)
 
-    if isinstance(features, str):
-        features = features.replace(',', ' ').split()
-    class cls(UAbase):
-        extensions = ext
-    for feature in features:
-        if isinstance(feature, str):
-            try:
-                mixin = UAfeatures[feature]
-            except:
-                log.logandraise(Exception("unknown feature {}".format(feature)))
-        else:
-            mixin = feature
-        class newcls(mixin, cls):
-            pass
-        cls = newcls
-    return cls
-    
+    if ext not in classcache:
+        class SIPPhone(Cancelation, Session, Authentication, Registration, UAbase):
+            extensions = ext
+        classcache[ext] = SIPPhone
+    return classcache[ext]
+
 if __name__ == '__main__':
     import snl
     snl.loggers['UA'].setLevel('INFO')
 
-    idA = dict(
+    config = dict(
         transport='eno1:5555',
         proxy='194.2.137.40',
         domain='sip:osk.nokims.eu',
         addressofrecord='sip:+33900821220@osk.nokims.eu',
+        registration=dict(autoregister=True, expires=200, reregister=0.5, autounregister=True),
         credentials=dict(username='+33900821220@osk.nokims.eu', password='nsnims2008'),
-        mediaport=3456,
+        mediaargs=dict(port=3456),
     )
-    phoneA = snl.SIPPhone(**idA)
-    phoneA.register(200)
-    phoneA.register(0)
+    phone = snl.SIPPhoneClass()(**config)
