@@ -15,6 +15,8 @@ import errno
 import weakref
 import atexit
 import signal
+import ssl
+import os
 log = logging.getLogger('Transport')
 
 from . import Message
@@ -35,7 +37,7 @@ class Transport(multiprocessing.Process):
         Transport.instances.add(instance)
         return instance
 
-    def __init__(self, *, interface=None, address=None, port=None, behindnat=None, protocol='UDP+TCP', maxudp=1300, errorcb=None, sendcb=None, recvcb=None):
+    def __init__(self, *, interface=None, address=None, port=None, behindnat=None, protocol='UDP+TCP', maxudp=1300, cafile=None, hostname=None, errorcb=None, sendcb=None, recvcb=None):
         self.started = False
         if interface:
             interfaces = Utils.getinterfaces()
@@ -71,6 +73,8 @@ class Transport(multiprocessing.Process):
         if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
             log.logandraise(Exception("bad value for protocol transport: {}".format(protocol)))
         self.maxudp = maxudp
+        self.cafile = cafile
+        self.hostname = hostname
         self.errorcb = errorcb
         self.sendcb = sendcb
         self.recvcb = recvcb
@@ -124,6 +128,9 @@ class Transport(multiprocessing.Process):
                 dstport = dstport or 5061
                 if issip:
                     message.length = len(message.body)
+                fd,srcport = self.gettlssocket(dstip, dstport, cafile=self.cafile, hostname=self.hostname)
+                viaport = self.localport
+                addr = (dstip, dstport)
             else:
                 dstport = dstport or 5060
                 if protocol == 'UDP+TCP':
@@ -156,15 +163,15 @@ class Transport(multiprocessing.Process):
                         viaport = srcport = self.localport
                         addr = (dstip, dstport)
 
-                via = message.header('via') if issip else None
-                if via:
-                    via.protocol = protocol[:3]
-                    if self.behindnat:
-                         via.host,via.port = self.behindnat
-                         via.params['rport']=None
-                    else:
-                        via.host = self.localip
-                        via.port = viaport if viaport!=5060 else None
+            via = message.header('via') if issip else None
+            if via:
+                via.protocol = protocol[:3]
+                if self.behindnat:
+                     via.host,via.port = self.behindnat
+                     via.params['rport']=None
+                else:
+                    via.host = self.localip
+                    via.port = viaport if viaport!=5060 else None
 
         elif isresponse:
             assert addr is None
@@ -179,7 +186,8 @@ class Transport(multiprocessing.Process):
             if self.protocol == 'TLS':
                 dstport = dstport or 5061
                 message.length = len(message.body)
-                pass
+                fd,srcport = self.gettlssocket(dstip, dstport, message.fd, self.cafile, self.hostname)
+                addr = (dstip, dstport)
             else:
                 dstport = dstport or 5060
                 if protocol == 'TCP':
@@ -263,6 +271,10 @@ class Transport(multiprocessing.Process):
 
     def gettcpsocket(self, remoteip, remoteport, fd=None):
         fd,localport = self.command('gettcp', (remoteip, remoteport), fd)
+        return fd, localport
+
+    def gettlssocket(self, remoteip, remoteport, fd=None, cafile=None, hostname=None):
+        fd,localport = self.command('gettls', (remoteip, remoteport), fd, cafile, hostname)
         return fd, localport
 
     def prepareSA(self, remoteip):
@@ -354,6 +366,43 @@ class Transport(multiprocessing.Process):
                                 self.childcommandpipe.send(exc)
                                 continue
                         self.childcommandpipe.send((sock.fd, sock.localport))
+                    elif command[0] == 'gettls':
+                        remoteaddr,fd,cafile,hostname = command[1:]
+                        for sock in servicesockets:
+                            if sock.tcp and (sock.fd==fd or sock.remoteaddr==remoteaddr):
+                                break
+                        else:
+                            try:
+                                sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=cafile)
+                            except OSError as err:
+                                exc = Exception("bad CA file {} {}".format(cafile, err))
+                                self.childcommandpipe.send(exc)
+                                continue
+                            try:
+                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                sock.settimeout(2)
+                                sock.bind((self.localip, 0))
+                                sock.connect(remoteaddr)
+                                sslcontext.check_hostname = bool(hostname)
+                                sock = sslcontext.wrap_socket(sock, server_hostname=hostname)
+                                sock = servicesockets.new(sock)
+                            except socket.timeout as err:
+                                exc = Exception("cannot connect to {}:{}. timeout".format(*remoteaddr))
+                                self.childcommandpipe.send(exc)
+                                continue
+                            except ssl.CertificateError as err:
+                                exc = Exception("cannot connect to {}:{}. {}".format(*remoteaddr, err))
+                                self.childcommandpipe.send(exc)
+                                continue
+                            except ssl.SSLError as err:
+                                exc = Exception("cannot connect to {}:{}. {} {}".format(*remoteaddr, err.library, err.reason))
+                                self.childcommandpipe.send(exc)
+                                continue
+                            except OSError as err:
+                                exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
+                                self.childcommandpipe.send(exc)
+                                continue
+                        self.childcommandpipe.send((sock.fd, sock.localport))
                     elif command[0] == 'sa':
                         try:
                             if command[1] == 'prepare':
@@ -411,6 +460,9 @@ class Transport(multiprocessing.Process):
                         self.childmessagepipe.send((obj.fd,'UDP',remoteaddr,obj.localport,decodeinfo))
 
                     elif obj.tcp:
+                        protocol = 'TCP'
+                        if isinstance(obj, ssl.SSLSocket):
+                            protocol = 'TLS'
                         # assemble with previous buffer stored in TCPSocket
                         while True:
                             decodeinfo = Message.SIPMessage.predecode(buf)
@@ -423,7 +475,7 @@ class Transport(multiprocessing.Process):
                             # Flush buffer if filled with CRLF
                             if decodeinfo.status == 'EMPTY':
                                 if buf:
-                                    log.info("%s:%s <-TCP-- %s:%d (fd=%d)\n%s", obj.localip, obj.localport, *remoteaddr, obj.fd, bytes(buf))
+                                    log.info("%s:%s <-%s-- %s:%d (fd=%d)\n%s", obj.localip, protocol, obj.localport, *remoteaddr, obj.fd, bytes(buf))
                                     del buf[:]
                                 break
 
@@ -431,7 +483,7 @@ class Transport(multiprocessing.Process):
                             if decodeinfo.status != 'OK':
                                 break
 
-                            self.childmessagepipe.send((obj.fd,'TCP',remoteaddr,obj.localport,decodeinfo))
+                            self.childmessagepipe.send((obj.fd,protocol,remoteaddr,obj.localport,decodeinfo))
                             del buf[:decodeinfo.iend]
 
                 servicesockets.cleanup()
