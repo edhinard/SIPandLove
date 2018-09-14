@@ -47,9 +47,6 @@ class UAbase(Transaction.TransactionManager):
         self.contacturi.host = self.transport.localip
         self.contacturi.port = self.transport.localport
 
-    def destroy(self):
-        self.transport.stop()
-
     def __str__(self):
         return str(self.contacturi)
 
@@ -116,7 +113,7 @@ def unregisterphones():
 class Registration:
     def __init__(self, registration={}, **kwargs):
         self.autoreg = registration.pop('autoreg', True)
-        self.autounreg = registration.pop('autounreg', True)
+        self.autounreg = registration.pop('autounreg', self.autoreg)
         self.reregister = registration.pop('reregister', 0.5)
         if not isinstance(self.reregister, (int, float)):
             raise TypeError('expecting a number for reregister not {!r}'.format(self.reregister))

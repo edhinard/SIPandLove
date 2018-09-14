@@ -34,6 +34,11 @@ class TransactionManager(threading.Thread):
             self.allow.add('ACK')
         self.start()
 
+    def destroy(self):
+        self.transport.stop()
+        del self.transport
+        # not enough to free self.transport since pending transactions and pending transaction timers have a reference on it...
+
     def transporterror(self, message, err):
         transaction = self.transactionmatching(message)
         if transaction:
