@@ -39,7 +39,7 @@ class Media(threading.Thread):
         17:('DVI4/22050',  None),
         18:('G729/8000',   None)}
 
-    def __init__(self, *, ua, ip=None, port=None, pcapfilename=None, pcapfilter=None, loop=False):
+    def __init__(self, *, ua, ip=None, port=None, pcap=None, filter=None, loop=False):
         self.ua = ua
         self.stopped = False
         self.localip = ip or ua.transport.localip
@@ -47,8 +47,8 @@ class Media(threading.Thread):
         self.wantedlocalport = port or 0
         self.remoteip = None
         self.remoteport = None
-        self.pcapfilename = pcapfilename
-        self.pcapfilter = pcapfilter
+        self.pcapfilename = pcap
+        self.pcapfilter = filter
         self.loop = loop
         self.codecs = [(payloadtype, codecname, codecformat) for payloadtype,(codecname, codecformat) in Media.defaultcodecs.items()]
 

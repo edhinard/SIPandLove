@@ -17,6 +17,7 @@ import atexit
 import signal
 import ssl
 import os
+import itertools
 log = logging.getLogger('Transport')
 
 from . import Message
@@ -39,28 +40,59 @@ class Transport(multiprocessing.Process):
 
     def __init__(self, *, interface=None, address=None, port=None, behindnat=None, protocol='UDP+TCP', maxudp=1300, cafile=None, hostname=None, errorcb=None, sendcb=None, recvcb=None):
         self.started = False
+
+        self.localip = self.localport = None
+        self.protocol = protocol.upper()
+        if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
+            log.logandraise(Exception("bad value for protocol transport: {}".format(protocol)))
+
+        # build a list of candidate ip address from parameters 'interface' and 'address'
+        addresses = []
+        interfaces = Utils.getinterfaces()
+        if interface and interface not in interfaces:
+            log.logandraise(Exception("unknown interface {}".format(interface)))
         if interface:
-            interfaces = Utils.getinterfaces()
-            if interface not in interfaces:
-                log.logandraise(Exception("unknown interface {}".format(interface)))
-            if isinstance(address, int):
-                try:
-                    self.localip = interfaces[interface][address]
-                except:
-                    log.logandraise(Exception("bad integer value for address ({}). Expecting an integer in [0-{}]".format(address, len(interfaces[interface])-1)))
-            elif address is not None:
-                if address not in interfaces[interface]:
-                    log.logandraise(Exception("address {} is not attached to interface {}".format(address, interface)))
-                self.localip = address
-            else:
-                self.localip = interfaces[interface][0]
-        elif address is not None:
-            if not isinstance(address, str):
-                log.logandraise(Exception('expecting an IP address not {}'.format(address)))
-            self.localip = address
+            addresses = interfaces[interface]
         else:
-            log.logandraise(Exception("missing 'interface' or 'address' parameter for transport"))
-        self.localport = port
+            list(map(addresses.extend, interfaces.values()))
+
+        if isinstance(address, int):
+            if address < 0:
+                log.logandraise(Exception("bad integer value for address ({}). Expecting a positive value".format(address)))
+            elif address >= len(addresses):
+                log.logandraise(Exception("bad integer value for address ({}). Maximum value is {}".format(address, len(addresses)-1)))
+            else:
+                addresses = [addresses[address]]
+        elif address and address not in addresses:
+            log.logandraise(Exception("unknown address {}. Possible values are {}".format(address, addresses)))
+            addresses = [address]
+        firstaddress = addresses[0]
+
+        # build a list of candidate ports
+        if port is not None and (not isinstance(port, int) or port<=0 or port>=65536):
+            log.logandraise(Exception("bad value for port ({})".format(port)))
+        if port is not None:
+            ports = [port]
+            firstport = port
+        else:
+            if self.protocol == 'TLS':
+                firstport = 5061
+            else:
+                firstport = 5060
+            ports = range(firstport,65536,2)
+
+        # candidate couples (port, address)
+        candidates = itertools.product(ports,addresses)
+
+        # find the first candidate not already used by another transport instance
+        reserved = [(t.localport, t.localip) for t in Transport.instances]
+        for candidate in candidates:
+            if candidate not in reserved:
+                break
+        else:
+            candidate = (firstport, firstaddress)
+        self.localport,self.localip = candidate
+
         if isinstance(behindnat, str):
             if ':' in behindnat:
                 nat = behindnat.split(':', 1)
@@ -69,20 +101,12 @@ class Transport(multiprocessing.Process):
                 self.behindnat = (behindnat, None)
         else:
             self.behindnat = behindnat
-        self.protocol = protocol.upper()
-        if not self.protocol in ('UDP', 'TCP', 'TLS', 'UDP+TCP'):
-            log.logandraise(Exception("bad value for protocol transport: {}".format(protocol)))
         self.maxudp = maxudp
         self.cafile = cafile
         self.hostname = hostname
         self.errorcb = errorcb
         self.sendcb = sendcb
         self.recvcb = recvcb
-        if not self.localport:
-            if self.protocol == 'TLS':
-                self.localport = 5061
-            else:
-                self.localport = 5060
         self.messagepipe,self.childmessagepipe = multiprocessing.Pipe()
         self.commandpipe,self.childcommandpipe = multiprocessing.Pipe()
         multiprocessing.Process.__init__(self)
@@ -461,7 +485,7 @@ class Transport(multiprocessing.Process):
 
                     elif obj.tcp:
                         protocol = 'TCP'
-                        if isinstance(obj, ssl.SSLSocket):
+                        if isinstance(obj.sock, ssl.SSLSocket):
                             protocol = 'TLS'
                         # assemble with previous buffer stored in TCPSocket
                         while True:

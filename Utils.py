@@ -6,6 +6,7 @@ import socket
 import fcntl
 import struct
 import array
+import sys
 
 ESCAPE_RE=re.compile('\\\\[\r\n]')
 def unquote(string):
@@ -167,13 +168,13 @@ def getinterfaces():
 
     # III - Getting all ifreq buffers
     #
-    #       struct ifreq {
-    #           char ifr_name[IFNAMSIZ]; /* Interface name */
-    #           union {
-    #               struct sockaddr ifr_addr;
-    #                 ...
-    #           };
-    #       }
+    # struct ifreq {
+    #     char ifr_name[IFNAMSIZ]; /* Interface name */
+    #     union {
+    #         struct sockaddr ifr_addr;
+    #            ...
+    #     };
+    # }
     # runnning ioctl(SIOCGIFCONF) for the last time with a buffer
     # big enough to contains all ifreqs (there are ipnum)
     # ifr_name and ifr_addr (IPv4) fields are filled
@@ -189,6 +190,32 @@ def getinterfaces():
         sa_family = ifreqs[offset+IFNAMSIZ:offset+IFNAMSIZ+4]
         ifr_addr = socket.inet_ntoa(ifreqs[offset+IFNAMSIZ+4:offset+IFNAMSIZ+8])
         interfaces.setdefault(ifr_name, []).append(ifr_addr)
+
+    # IV - Filtering out loopback and not running interfaces
+    #
+    # using ioctl(SIOCGIFFLAGS) to get flags on an interface
+    #       struct ifreq {
+    #           char ifr_name[IFNAMSIZ]; /* Interface name */
+    #           union {
+    #                ...
+    #               short           ifr_flags;
+    #                ...
+    #           };
+    #       }
+    #
+    SIOCGIFFLAGS = 0x8913
+    IFF_UP = 0x1
+    IFF_LOOPBACK = 0x8
+    IFF_RUNNING	= 0x40
+    for name in list(interfaces.keys()):
+        ifreq = bytearray(name.encode('ascii') + b'\x00'*IFNAMSIZ*2)
+        fcntl.ioctl(s.fileno(), SIOCGIFFLAGS, ifreq)
+        flags = int.from_bytes(ifreq[IFNAMSIZ:IFNAMSIZ+2], byteorder=sys.byteorder)
+        up = bool(flags&IFF_UP)
+        loopback = bool(flags&IFF_LOOPBACK)
+        running = bool(flags&IFF_RUNNING)
+        if loopback or not running:
+            interfaces.pop(name)
 
     s.close()
     return interfaces

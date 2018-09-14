@@ -22,18 +22,10 @@ from . import Utils
 
 
 class UAbase(Transaction.TransactionManager):
-    def __init__(self, transport, proxy, domain, addressofrecord, T1=None, T2=None, T4=None):
-        if isinstance(transport, str):
-            port = None
-            if ':' in transport:
-                transport,port = transport.split(':', 1)
-            if '.' in transport:
-                transport = dict(address=transport)
-            else:
-                transport = dict(interface=transport)
-            if port is not None:
-                transport['port'] = port
-        super().__init__(transport, T1, T2, T4)
+    def __init__(self, ua={}, transport={}, transaction={}):
+        super().__init__(transport, **transaction)
+
+        proxy = ua.pop('proxy')
         try:
             if isinstance(proxy, str):
                 if ':' in proxy:
@@ -47,9 +39,11 @@ class UAbase(Transaction.TransactionManager):
                 self.proxy = tuple(proxy)
         except:
             log.logandraise(Exception('invalid proxy definition {!r}'.format(proxy)))
-        self.domain = domain
-        self.addressofrecord = addressofrecord
+        self.addressofrecord = ua.pop('aor')
         self.contacturi = SIPBNF.URI(self.addressofrecord)
+        self.domain = ua.pop('domain', 'sip:{}'.format(self.contacturi.host))
+        if ua:
+            raise ValueError('unexpecting UA parameters {}'.format(ua))
         self.contacturi.host = self.transport.localip
         self.contacturi.port = self.transport.localport
 
@@ -288,9 +282,9 @@ class Authentication:
         return result
 
 class Session:
-    def __init__(self, mediaclass=Media.Media, mediaargs={}, **kwargs):
-        self.mediaclass = mediaclass
-        self.mediaargs = mediaargs
+    def __init__(self, session={}, **kwargs):
+        self.mediaclass = session.pop('media', Media.Media)
+        self.mediaargs = session.pop('mediaargs', {})
         self.sessions = []
         self.lock = threading.Lock()
         super().__init__(**kwargs)
