@@ -20,26 +20,26 @@ log = logging.getLogger('Media')
 from . import Pcap
 
 class Media(threading.Thread):
-    defaultcodecs = {
-        0 :('PCMU/8000',   None),
-        3 :('GSM/8000',    None),
-        4 :('G723/8000',   None),
-        5 :('DVI4/8000',   None),
-        6 :('DVI4/16000',  None),
-        7 :('LPC/8000',    None),
-        8 :('PCMA/8000',   None),
-        9 :('G722/8000',   None),
-        10:('L16/44100/2', None),
-        11:('L16/44100/1', None),
-        12:('QCELP/8000',  None),
-        13:('CN/8000',     None),
-        14:('MPA/90000',   None),
-        15:('G728/8000',   None),
-        16:('DVI4/11025',  None),
-        17:('DVI4/22050',  None),
-        18:('G729/8000',   None)}
+    defaultcodecs = (
+        (0,  'PCMU/8000',   None),
+        (3,  'GSM/8000',    None),
+        (4,  'G723/8000',   None),
+        (5,  'DVI4/8000',   None),
+        (6,  'DVI4/16000',  None),
+        (7,  'LPC/8000',    None),
+        (8,  'PCMA/8000',   None),
+        (9,  'G722/8000',   None),
+        (10, 'L16/44100/2', None),
+        (11, 'L16/44100/1', None),
+        (12, 'QCELP/8000',  None),
+        (13, 'CN/8000',     None),
+        (14, 'MPA/90000',   None),
+        (15, 'G728/8000',   None),
+        (16, 'DVI4/11025',  None),
+        (17, 'DVI4/22050',  None),
+        (18, 'G729/8000',   None))
 
-    def __init__(self, *, ua, ip=None, port=None, pcap=None, filter=None, loop=False):
+    def __init__(self, *, ua, ip=None, port=None, pcap=None, codecs=None, filter=None, loop=False):
         self.ua = ua
         self.stopped = False
         self.localip = ip or ua.transport.localip
@@ -50,8 +50,8 @@ class Media(threading.Thread):
         self.pcapfilename = pcap
         self.pcapfilter = filter
         self.loop = loop
-        self.codecs = [(payloadtype, codecname, codecformat) for payloadtype,(codecname, codecformat) in Media.defaultcodecs.items()]
-
+        codecs = codecs or Media.defaultcodecs
+        self.codecs = [codec if len(codec)==3 else (*codec, None) for codec in codecs]
         self.lock = multiprocessing.Lock()
         self.lock.acquire()
         self.pipe,childpipe = multiprocessing.Pipe()
@@ -222,8 +222,9 @@ class MediaProcess(multiprocessing.Process):
                 # multiprocessing.connection.wait timeout
                 # time to send next RTP packet if there is one
                 wakeuptime,rtp = rtpstream.nextpacket()
-                sock.sendto(rtp, remoteaddr)
-                log.info("%s %s:%-5d ---> %s:%-5d RTP(%s)", self, *sock.getsockname(), *remoteaddr, RTP.frombytes(rtp))
+                if rtp:
+                    sock.sendto(rtp, remoteaddr)
+                    log.info("%s %s:%-5d ---> %s:%-5d RTP(%s)", self, *sock.getsockname(), *remoteaddr, RTP.frombytes(rtp))
                 if wakeuptime is None:
                     if loop:
                         if not isinstance(loop, bool):
@@ -293,6 +294,7 @@ class RTPStream:
         try:
             dummy,self.nextrtp = next(self.generator)
         except StopIteration:
+            self.nextrtp = None
             self.eof = True
 
     def nextpacket(self):
