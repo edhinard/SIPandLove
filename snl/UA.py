@@ -426,7 +426,7 @@ class Session:
 
 class Cancelation:
     def CANCEL_handler(self, cancel):
-        transaction = self.transactionmatching(cancel, matchonbranch=True)
+        transaction = self.transactionmatching(cancel, matchonlyonbranch=True)
         if transaction:
             log.info("%s canceled by %s", self, cancel.fromaddr)
             resp = cancel.response(200)

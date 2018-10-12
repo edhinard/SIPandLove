@@ -55,7 +55,6 @@ class TransactionManager(threading.Thread):
         return transaction
 
     def newclienttransaction(self, request, addr):
-        request.enforceheaders()
         if isinstance(request, Message.INVITE):
             transactionclass = INVITEclientTransaction
         else:
@@ -70,15 +69,15 @@ class TransactionManager(threading.Thread):
             self.transactions.append(transaction)
         return transaction
 
-    def transactionmatching(self, message, matchonbranch=False):
+    def transactionmatching(self, message, matchonlyonbranch=False):
         with self.lock:
             for transaction in self.transactions:
                 # "normal" match algorithm
-                if not matchonbranch and (transaction.id == transaction.identifier(message)):
+                if not matchonlyonbranch and (transaction.id == transaction.identifier(message)):
                     return transaction
 
                 # used to find a transaction to CANCEL
-                if matchonbranch and (transaction.request.branch == message.branch):
+                if matchonlyonbranch and (transaction.request.branch == message.branch):
                     return transaction
 
     def run(self):
@@ -320,6 +319,9 @@ class ClientTransaction(Transaction):
             else:
                 method = None
         return (message.branch, method)
+    def __init__(self, request, *args, **kwargs):
+        request.enforceheaders()
+        super().__init__(request, *args, **kwargs)
 
 class ServerTransaction(Transaction):
     @staticmethod
@@ -461,7 +463,6 @@ class ACKclientTransaction(ClientTransaction):
         return ident
     state = 'Proceeding'
     def init(self):
-        self.request.branch = Tags.branch()
         self.transport.send(self.request, self.addr)
         self.armtimer('B', 64*self.T1)
 
