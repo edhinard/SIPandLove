@@ -48,13 +48,17 @@ class Transport(multiprocessing.Process):
 
         # build a list of candidate ip address from parameters 'interface' and 'address'
         addresses = []
-        interfaces = Utils.getinterfaces()
-        if interface and interface not in interfaces:
+        loopbackaddresses = []
+        interfaces,loopbackinterfaces = Utils.getinterfaces()
+        if interface and interface not in interfaces and interface not in loopbackinterfaces:
             log.logandraise(Exception("unknown interface {}".format(interface)))
-        if interface:
+        if interface in interfaces:
             addresses = interfaces[interface]
+        elif interface in loopbackinterfaces:
+            addresses = loopbackinterfaces[interface]
         else:
             list(map(addresses.extend, interfaces.values()))
+        list(map(loopbackaddresses.extend, loopbackinterfaces.values()))
 
         if isinstance(address, int):
             if address < 0:
@@ -63,8 +67,11 @@ class Transport(multiprocessing.Process):
                 log.logandraise(Exception("bad integer value for address ({}). Maximum value is {}".format(address, len(addresses)-1)))
             else:
                 addresses = [addresses[address]]
-        elif address and address not in addresses:
-            log.logandraise(Exception("unknown address {}. Possible values are {}".format(address, addresses)))
+        elif address:
+            if not interface:
+                addresses += loopbackaddresses
+            if address not in addresses:
+                log.logandraise(Exception("unknown address {}. Possible values are {}".format(address, addresses)))
             addresses = [address]
         firstaddress = addresses[0]
 

@@ -207,6 +207,7 @@ def getinterfaces():
     IFF_UP = 0x1
     IFF_LOOPBACK = 0x8
     IFF_RUNNING	= 0x40
+    loopbackinterfaces = {}
     for name in list(interfaces.keys()):
         ifreq = bytearray(name.encode('ascii') + b'\x00'*IFNAMSIZ*2)
         fcntl.ioctl(s.fileno(), SIOCGIFFLAGS, ifreq)
@@ -214,8 +215,10 @@ def getinterfaces():
         up = bool(flags&IFF_UP)
         loopback = bool(flags&IFF_LOOPBACK)
         running = bool(flags&IFF_RUNNING)
-        if loopback or not running:
+        if not running:
             interfaces.pop(name)
+        if loopback:
+            loopbackinterfaces[name] = interfaces.pop(name)
 
     s.close()
-    return interfaces
+    return interfaces, loopbackinterfaces
