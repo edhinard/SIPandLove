@@ -25,7 +25,7 @@ class UAbase(Transaction.TransactionManager):
     def __init__(self, ua={}, transport={}, transaction={}):
         super().__init__(transport, **transaction)
 
-        proxy = ua.pop('proxy')
+        proxy = ua.pop('proxy', None)
         try:
             if isinstance(proxy, str):
                 if ':' in proxy:
@@ -33,19 +33,19 @@ class UAbase(Transaction.TransactionManager):
                     self.proxy = (prox[0], int(prox[1]))
                 else:
                     self.proxy = (proxy, None)
-            else:
-                assert isinstance(proxy, (list,tuple))
+            elif isinstance(proxy, (list,tuple)):
                 assert len(proxy) == 2
                 self.proxy = tuple(proxy)
         except:
             log.logandraise(Exception('invalid proxy definition {!r}'.format(proxy)))
-        self.addressofrecord = ua.pop('aor')
-        self.contacturi = SIPBNF.URI(self.addressofrecord)
-        self.domain = ua.pop('domain', 'sip:{}'.format(self.contacturi.host))
+        self.addressofrecord = ua.pop('aor', None)
+        self.contacturi = SIPBNF.URI(self.addressofrecord) if self.addressofrecord else None
+        self.domain = ua.pop('domain', 'sip:{}'.format(self.contacturi.host) if self.contacturi else None)
         if ua:
             raise ValueError('unexpecting UA parameters {}'.format(ua))
-        self.contacturi.host = self.transport.localip
-        self.contacturi.port = self.transport.localport
+        if self.contacturi:
+            self.contacturi.host = self.transport.localip
+            self.contacturi.port = self.transport.localport
 
     def __str__(self):
         return str(self.contacturi)
@@ -129,11 +129,11 @@ class Registration:
         self.registermessage = None
         self.regtimer = None
 
-        if self.autoreg:
+        if self.autoreg and self.addressofrecord:
             self.register()
 
         global tobeunregistered
-        if self.autounreg:
+        if self.autounreg and self.addressofrecord:
             tobeunregistered.add(self)
 
     def register(self, expires=None, *headers, async=False):
