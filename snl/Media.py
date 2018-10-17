@@ -20,24 +20,24 @@ log = logging.getLogger('Media')
 from . import Pcap
 
 class Media(threading.Thread):
-    defaultcodecs = (
-        (0,  'PCMU/8000',   None),
-        (3,  'GSM/8000',    None),
-        (4,  'G723/8000',   None),
-        (5,  'DVI4/8000',   None),
-        (6,  'DVI4/16000',  None),
-        (7,  'LPC/8000',    None),
-        (8,  'PCMA/8000',   None),
-        (9,  'G722/8000',   None),
-        (10, 'L16/44100/2', None),
-        (11, 'L16/44100/1', None),
-        (12, 'QCELP/8000',  None),
-        (13, 'CN/8000',     None),
-        (14, 'MPA/90000',   None),
-        (15, 'G728/8000',   None),
-        (16, 'DVI4/11025',  None),
-        (17, 'DVI4/22050',  None),
-        (18, 'G729/8000',   None))
+    defaultcodecs = {
+        0: 'PCMU/8000',
+        3: 'GSM/8000',
+        4: 'G723/8000',
+        5: 'DVI4/8000',
+        6: 'DVI4/16000',
+        7: 'LPC/8000',
+        8: 'PCMA/8000',
+        9: 'G722/8000',
+        10:'L16/44100/2',
+        11:'L16/44100/1',
+        12:'QCELP/8000',
+        13:'CN/8000',
+        14:'MPA/90000',
+        15:'G728/8000',
+        16:'DVI4/11025',
+        17:'DVI4/22050',
+        18:'G729/8000'}
 
     def __init__(self, *, ua, ip=None, port=None, pcap=None, codecs=None, filter=None, loop=False):
         self.ua = ua
@@ -50,8 +50,18 @@ class Media(threading.Thread):
         self.pcapfilename = pcap
         self.pcapfilter = filter
         self.loop = loop
-        codecs = codecs or Media.defaultcodecs
-        self.codecs = [codec if len(codec)==3 else (*codec, None) for codec in codecs]
+        self.codecs = []
+        for codec in codecs or list(Media.defaultcodecs.items()):
+            if isinstance(codec, int):
+                if codec in Media.defaultcodecs:
+                    self.codecs.append((codec, Media.defaultcodecs[codec], None))
+                else:
+                    raise Exception("{} is not a default codec".format(codec))
+            elif isinstance(codec, (list, tuple)):
+                if len(codec) == 2:
+                    self.codecs.append((*codec, None))
+                elif len(codec) >= 3:
+                    self.codecs.append(tuple(codec[:3]))
         self.lock = multiprocessing.Lock()
         self.lock.acquire()
         self.pipe,childpipe = multiprocessing.Pipe()
