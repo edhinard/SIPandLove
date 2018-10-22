@@ -122,6 +122,9 @@ class Registration:
         self.expires = registration.pop('expires', 3600)
         if not isinstance(self.expires, (int, float)):
             raise TypeError('expecting a number for expires not {!r}'.format(self.expires))
+        self.features = registration.pop('features', dict())
+        if not isinstance(self.features, dict):
+            raise TypeError('expecting a dict for features not {!r}'.format(self.features))
         if registration:
             raise ValueError('unexpecting registration parameters {}'.format(registration))
         super().__init__(**kwargs)
@@ -155,7 +158,7 @@ class Registration:
             self.registermessage.addheaders(
                 Header.From(self.addressofrecord),
                 Header.To(self.addressofrecord),
-                Header.Contact(self.contacturi, params={'+g.3gpp.icsi-ref':"urn:urn-7:3gpp-service.ims.icsi.mmtel"}),
+                Header.Contact(self.contacturi, params=self.features),
                 ifmissing=True
             )
         else:
