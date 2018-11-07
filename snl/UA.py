@@ -179,6 +179,8 @@ class Registration:
                     log.info("%s registered for %ds", self, gotexpires)
                     if self.reregister:
                         self.regtimer = Timer.arm(gotexpires*self.reregister, self.register, expires, *headers, async=True)
+                    if 'reg-event' in self.extensions:
+                        self.subscribe('reg', expires=expires)
                 else:
                     self.registered = False
                     self.registermessage = None
@@ -441,14 +443,73 @@ class Cancelation:
         log.info("%s invalid cancelation from %s", self, cancel.fromaddr)
         return cancel.response(481)
 
+class Notification:
+    class Subscription:
+        def __init__(self):
+            self.subscribe = None
+
+    # todo:
+    #  -dialog management
+    #  -timerN and subscription state management
+
+    def __init__(self, **kwargs):
+        self.subscriptions = {}
+        super().__init__(**kwargs)
+
+    def subscribe(self, event, expires, *headers):
+        if event not in self.subscriptions:
+            self.subscriptions[event] = Notification.Subscription()
+        subscription = self.subscriptions[event]
+
+        if subscription.subscribe is None:
+            subscription.subscribe = Message.SUBSCRIBE(self.addressofrecord, *headers)
+            subscription.subscribe.addheaders(
+                Header.From(self.addressofrecord),
+                Header.To(self.addressofrecord),
+                Header.Contact(self.contacturi),
+                Header.Event(event),
+                ifmissing=True
+            )
+        else:
+            subscription.subscribe.addheaders(*headers, replace=True)
+            subscription.subscribe.seq += 1
+        subscription.subscribe.addheaders(Header.Expires(delta=expires), replace=True)
+
+        log.info("%s subscribing to %r", self, event)
+        for result in self.sendmessage(subscription.subscribe):
+            if result.success is not None:
+                log.info("%s subscription ok", self)
+                return
+
+            elif result.error is not None:
+                log.info("%s subscription failed: %s %s", self, result.error.code, result.error.reason)
+                self.subscription.remove(event)
+                return
+
+            elif result.provisional is not None:
+                pass
+
+            elif result.exception is not None:
+                log.info("%s subscription failed: %s", self, result.exception)
+                self.subscription.remove(event)
+                return
+
+    def NOTIFY_handler(self, notify):
+        return notify.response(200)
+
 classcache = {}
-def SIPPhoneClass(extensions=set()):
-    if 'sec-agree' in extensions and not Security.SEC_AGREE:
-        log.logandraise(Exception('sec-agree is not possible. try to run script as root'))
+def SIPPhoneClass(*extensions):
+    for extension in set(extensions):
+        if extension == 'sec-agree' and not Security.SEC_AGREE:
+            log.logandraise(Exception('sec-agree is not possible. try to run script as root'))
+        elif extension == 'reg-event':
+            pass
+        else:
+            log.logandraise(Exception('unknown extension {}'.format(extension)))
     ext = frozenset(extensions)
 
     if ext not in classcache:
-        class SIPPhone(Cancelation, Session, Authentication, Registration, UAbase):
+        class SIPPhone(Notification, Cancelation, Session, Authentication, Registration, UAbase):
             extensions = ext
         classcache[ext] = SIPPhone
     return classcache[ext]

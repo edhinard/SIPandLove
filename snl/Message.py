@@ -490,6 +490,10 @@ class CANCEL(SIPRequest):
     pass
 class BYE(SIPRequest):
     pass
+class SUBSCRIBE(SIPRequest):
+    pass
+class NOTIFY(SIPRequest):
+    pass
 
 if __name__ == '__main__':
     import base64

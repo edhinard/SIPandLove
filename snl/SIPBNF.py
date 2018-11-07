@@ -428,6 +428,14 @@ class URI:
 #extension-method  =  token
 Method = pp.Literal('INVITE') ^ pp.Literal('ACK') ^ pp.Literal('OPTIONS') ^ pp.Literal('BYE') ^ pp.Literal('CANCEL') ^ pp.Literal('REGISTER') ^ token
 
+# ===================================================
+#RFC 6665             SIP-Specific Event Notification
+#   SUBSCRIBEm        = %x53.55.42.53.43.52.49.42.45 ; SUBSCRIBE in caps
+#   NOTIFYm           = %x4E.4F.54.49.46.59 ; NOTIFY in caps
+#   extension-method  = SUBSCRIBEm / NOTIFYm / token
+#
+Method = Method ^ pp.Literal('SUBSCRIBE') ^ pp.Literal('NOTIFY')
+# ===================================================
 
 #Response          =  Status-Line
 #                     *( message-header )
@@ -1164,3 +1172,86 @@ Security_VerifyArgs = Security_ClientArgs
 Security_VerifyParse = Security_ClientParse
 Security_VerifyDisplay = Security_ClientDisplay
 Security_VerifyMultiple = Security_ClientMultiple
+
+
+#RFC 6665             SIP-Specific Event Notification
+#   Event             =  ( "Event" / "o" ) HCOLON event-type
+#                        *( SEMI event-param )
+#   event-type        =  event-package *( "." event-template )
+#   event-package     =  token-nodot
+#   event-template    =  token-nodot
+#   token-nodot       =  1*( alphanum / "-"  / "!" / "%" / "*"
+#                            / "_" / "+" / "`" / "'" / "~" )
+#
+#   ; The use of the "id" parameter is deprecated; it is included
+#   ; for backwards-compatibility purposes only.
+#
+#   event-param       =  generic-param / ( "id" EQUAL token )
+#
+#   Allow-Events      =  ( "Allow-Events" / "u" ) HCOLON event-type
+#                        *(COMMA event-type)
+#
+#   Subscription-State   = "Subscription-State" HCOLON substate-value
+#                          *( SEMI subexp-params )
+#   substate-value       = "active" / "pending" / "terminated"
+#                          / extension-substate
+#   extension-substate   = token
+#   subexp-params        =   ("reason" EQUAL event-reason-value)
+#                          / ("expires" EQUAL delta-seconds)
+#                          / ("retry-after" EQUAL delta-seconds)
+#                          / generic-param
+#   event-reason-value   =   "deactivated"
+#                          / "probation"
+#                          / "rejected"
+#                          / "timeout"
+#                          / "giveup"
+#                          / "noresource"
+#                          / "invariant"
+#                          / event-reason-extension
+#   event-reason-extension = token
+event_type = token('event')
+Event = Parser('Event header', event_type + pp.ZeroOrMore(pp.Suppress(SEMI) + generic_param)('hparams'))
+EventAlias = 'o'
+EventArgs = ('event', 'params')
+def EventParse(headervalue):
+    res = Event.parse(headervalue)
+    params = res.get('hparams')
+    if params:
+        ks = params[0::2]; vs = params[1::2]
+        params = ParameterDict(zip(ks,vs))
+    else:
+        params = ParameterDict()
+    return dict(event=res.get('event'), params=params)
+def EventDisplay(event):
+    params = (";{}{}".format(k, "={}".format(v) if v is not None else "") for k,v in event.params.items())
+    return "{}{}".format(event.event, ''.join(params))
+
+Allow_Events = Parser('Allow-Events header', event_type + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + event_type)))
+Allow_EventsAlias = 'u'
+Allow_EventsArgs = ('event',)
+def Allow_EventsParse(headervalue):
+    for res in Allow_Events.parse(headervalue):
+        yield dict(event=res.get('event'))
+def Allow_EventsDisplay(allow):
+    return str(allow.event)
+Allow_EventsMultiple = True
+
+substate_value = pp.CaselessLiteral('active') | pp.CaselessLiteral('pending') | pp.CaselessLiteral('terminated') | token
+reason_param = pp.CaselessLiteral('reason') + pp.Suppress(EQUAL) + token
+retry_after = pp.CaselessLiteral('retry-after') + pp.Suppress(EQUAL) + delta_seconds
+subexp_param = reason_param | c_p_expires | retry_after | generic_param
+
+Subscription_State = Parser('Subscription-State header', substate_value('state') + pp.ZeroOrMore(pp.Suppress(SEMI) + subexp_param)('hparams'))
+Subscription_StateArgs = ('state', 'params')
+def Subscription_StateParse(headervalue):
+    res = Subscription_State.parse(headervalue)
+    params = res.get('hparams')
+    if params:
+        ks = params[0::2]; vs = params[1::2]
+        params = ParameterDict(zip(ks,vs))
+    else:
+        params = ParameterDict()
+    return dict(state=res.get('state'), params=params)
+def Subscription_StateDisplay(state):
+    params = (";{}{}".format(k, "={}".format(v) if v is not None else "") for k,v in state.params.items())
+    return "{}{}".format(state.state, ''.join(params))

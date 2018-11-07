@@ -432,6 +432,15 @@ class Security_Server(Header):
 class Security_Verify(Header):
     pass
 
+class Event(Header):
+    def __init__(self, event, params={}, name=None):
+        if not isinstance(params, Utils.ParameterDict):
+            params = Utils.ParameterDict(params)
+        super().__init__(event=event, params=params)
+class Allow_Events(Header):
+    pass
+class Subscription_State(Header):
+    pass
 
 if __name__ == '__main__':
     import sys
