@@ -7,6 +7,7 @@ import time
 import threading
 import weakref
 import atexit
+import ipaddress
 log = logging.getLogger('UA')
 
 from . import SIPBNF
@@ -20,11 +21,17 @@ from . import Security
 from . import Transport
 from . import Utils
 
+try:
+    import card.USIM as USIM
+except Exception as e:
+    log.warning("cannot import card (%s). SIM-AKA authentication is not possible", e)
+    USIM = None
 
 class UAbase(Transaction.TransactionManager):
-    def __init__(self, ua={}, transport={}, transaction={}):
+    def __init__(self, ua={}, identity={}, transport={}, transaction={}):
         super().__init__(transport, **transaction)
 
+        ua = dict(ua)
         proxy = ua.pop('proxy', None)
         try:
             if isinstance(proxy, str):
@@ -36,13 +43,61 @@ class UAbase(Transaction.TransactionManager):
             elif isinstance(proxy, (list,tuple)):
                 assert len(proxy) == 2
                 self.proxy = tuple(proxy)
+            elif isinstance(proxy, ipaddress.IPv4Address):
+                self.proxy = (proxy.exploded, None)
         except:
             log.logandraise(Exception('invalid proxy definition {!r}'.format(proxy)))
-        self.addressofrecord = ua.pop('aor', None)
-        self.contacturi = SIPBNF.URI(self.addressofrecord) if self.addressofrecord else None
-        self.domain = ua.pop('domain', 'sip:{}'.format(self.contacturi.host) if self.contacturi else None)
         if ua:
-            raise ValueError('unexpecting UA parameters {}'.format(ua))
+            raise ValueError('unexpected UA parameters {}'.format(ua))
+
+        identity =dict(identity)
+        self.identity = dict(usim=None)
+        self.addressofrecord = self.domain = None
+        iccid = identity.pop('iccid', None)
+        if iccid:
+            if not USIM:
+                log.logandraise(Exception("card module not present"))
+            try:
+                usim = USIM.USIM()
+                i = usim.get_ICCID()
+                usim.disconnect()
+                usim = USIM.USIM()
+                imsi = usim.get_imsi()
+            except Exception as e:
+                log.logandraise(e)
+            if i is None:
+                log.logandraise(Exception('cannot read ICCID'))
+            if i != iccid:
+                log.logandraise(Exception('bad ICCID expecting {} got {}'.format(iccid, i)))
+            if imsi is None:
+                log.logandraise(Exception('cannot read IMSI'))
+            realm = 'ims.mnc{:03}.mcc{:03}.3gppnetwork.org'.format(int(imsi[3:5]), int(imsi[:3]))
+            username = '{}@{}'.format(imsi, realm)
+            self.identity.update(iccid=iccid, usim=usim, imsi=imsi, realm=realm, username=username)
+            log.debug("Reading USIM n° {}".format(iccid))
+            log.debug("IMSI = {}".format(imsi))
+            log.debug("realm = {}".format(realm))
+            log.debug("username = {}".format(username))
+            self.domain = 'sip:{}'.format(realm)
+            self.addressofrecord = 'sip:{}'.format(username)
+
+        self.addressofrecord = identity.pop('aor', self.addressofrecord)
+        self.contacturi = SIPBNF.URI(self.addressofrecord) if self.addressofrecord else None
+        self.domain = identity.pop('domain', self.domain or 'sip:{}'.format(self.contacturi.host) if self.contacturi else None)
+
+        for key in ('realm', 'username', 'uri', 'K', 'OP', 'password'):
+            self.identity[key] = identity.pop(key, self.identity.get(key))
+        if not self.identity['uri']:
+            self.identity['uri'] = self.domain
+        if not self.identity['username']:
+            self.identity['username'] = self.addressofrecord.split(':', 1)[1]
+        if not self.identity['realm']:
+            if self.identity['username']:
+                self.identity['realm'] = self.identity['username'].partition('@')[2]
+            elif self.domain:
+                self.identity['realm'] = self.domain.split(':', 1)[1]
+        if identity:
+            raise ValueError('unexpected identity parameters {}'.format(identity))
         if self.contacturi:
             self.contacturi.host = self.transport.localip
             self.contacturi.port = self.transport.localport
@@ -112,6 +167,7 @@ def unregisterphones():
 
 class Registration:
     def __init__(self, registration={}, **kwargs):
+        registration = dict(registration)
         self.autoreg = registration.pop('autoreg', True)
         self.autounreg = registration.pop('autounreg', self.autoreg)
         self.reregister = registration.pop('reregister', 0.5)
@@ -207,8 +263,7 @@ class Registration:
 
 
 class Authentication:
-    def __init__(self, credentials=None, **kwargs):
-        self.credentials = credentials
+    def __init__(self, **kwargs):
         self.sa = None
         self.savedproxy = None
         self.saheaders = []
@@ -217,9 +272,9 @@ class Authentication:
     def sendmessage(self, message):
         needsecurity = 'sec-agree' in self.extensions and message.METHOD == 'REGISTER'
         if needsecurity and self.sa is None:
-            username = self.credentials.get('username')
-            uri = self.credentials.get('uri', self.domain)
-            realm = self.credentials.get('realm', username.partition('@')[2])
+            username = self.identity.get('username')
+            uri = self.identity.get('uri')
+            realm = self.identity.get('realm')
             self.saheaders.append(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
             self.sa = self.transport.prepareSA(self.proxy[0])
             for alg in Security.IPSEC_ALGS:
@@ -245,29 +300,25 @@ class Authentication:
                     if bestq == -1:
                         log.warning("%s no matching algorithm found for SA", self)
                         yield result
-                if self.credentials is None:
-                    log.warning("%s no credential provided at initialization", self)
-                    yield result
-                else:
-                    log.info("%s %d retrying %s with authentication", self, result.error.code, message.METHOD)
-                    auth = message.authenticationheader(result.error, **self.credentials)
-                    if auth.header is None:
-                        yield UAbase.Result(Exception(auth.error))
-                        return
-                    if needsecurity:
-                        self.transport.establishSA(**securityserverparams, **auth.extra)
-                        for sec in result.error.headers('security-server'):
-                            verify = Header.Security_Verify(**dict(sec))
-                            message.addheaders(verify)
-                            self.saheaders.append(verify)
-                        self.savedproxy = self.proxy
-                        self.proxy = (self.proxy[0], securityserverparams['ports'])
-                        self.contacturi.port = self.sa['ports']
-                        message.contacturi.port = self.sa['ports']
-                    message.addheaders(auth.header, replace=True)
-                    message.seq = message.seq + 1
-                    yield from super().sendmessage(message)
+                log.info("%s %d retrying %s with authentication", self, result.error.code, message.METHOD)
+                auth = message.authenticationheader(result.error, **self.identity)
+                if auth.header is None:
+                    yield UAbase.Result(Exception(auth.error))
                     return
+                if needsecurity:
+                    self.transport.establishSA(**securityserverparams, **auth.extra)
+                    for sec in result.error.headers('security-server'):
+                        verify = Header.Security_Verify(**dict(sec))
+                        message.addheaders(verify)
+                        self.saheaders.append(verify)
+                    self.savedproxy = self.proxy
+                    self.proxy = (self.proxy[0], securityserverparams['ports'])
+                    self.contacturi.port = self.sa['ports']
+                    message.contacturi.port = self.sa['ports']
+                message.addheaders(auth.header, replace=True)
+                message.seq = message.seq + 1
+                yield from super().sendmessage(message)
+                return
             else:
                 yield result
 
@@ -285,8 +336,11 @@ class Authentication:
 
 class Session:
     def __init__(self, session={}, **kwargs):
+        session = dict(session)
         self.mediaclass = session.pop('media', Media.Media)
         self.mediaargs = session.pop('mediaargs', {})
+        if session:
+            raise ValueError('unexpecting session parameters {}'.format(session))
         self.sessions = []
         self.lock = threading.Lock()
         super().__init__(**kwargs)
@@ -500,8 +554,9 @@ class Notification:
 classcache = {}
 def SIPPhoneClass(*extensions):
     for extension in set(extensions):
-        if extension == 'sec-agree' and not Security.SEC_AGREE:
-            log.logandraise(Exception('sec-agree is not possible. try to run script as root'))
+        if extension == 'sec-agree':
+            if not Security.SEC_AGREE:
+                log.logandraise(Exception('sec-agree is not possible. try to run script as root'))
         elif extension == 'reg-event':
             pass
         else:

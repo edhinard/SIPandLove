@@ -385,7 +385,7 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
     def startline(self):
         return '{} {} SIP/2.0'.format(self.method, self.uri).encode('utf-8')
 
-    def authenticationheader(self, response, nc=1, cnonce=None, **kwargs):
+    def authenticationheader(self, response, nc=1, cnonce=None, **identity):
         Auth = collections.namedtuple('Auth', 'header extra error')
         Auth.__new__.__defaults__ = ({}, None)
         authenticates = response.headers('WWW-Authenticate', 'Proxy-Authenticate')
@@ -404,39 +404,19 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
                 continue
 
             if algorithm.lower() == 'akav1-md5':
-                K = kwargs.pop('K', None)
-                if K is None:
-                    log.warning("missing K in credentials. Using 0")
-                    K = 16*b'\x00'
-                if len(K) < 16:
-                    log.warning("K too short. Padding with 0")
-                    K = K + (16-len(K))*b'\x00'
-                if len(K) > 16:
-                    log.warning("K too long. Keeping MSB")
-                    K = K[:16]
-                OP = kwargs.pop('OP', None)
-                if OP is None:
-                    log.warning("missing OP in credentials. Using 0")
-                    OP = 16*b'\x00'
-                if len(OP) < 16:
-                    log.warning("OP too short. Padding with 0")
-                    OP = OP + (16-len(OP))*b'\x00'
-                if len(OP) > 16:
-                    log.warning("OP too long. Keeping MSB")
-                    OP = OP[:16]
                 try:
-                    res,ik,ck = Security.AKA(authenticate.params.get('nonce'), K, OP)
+                    res,ik,ck = Security.AKA(authenticate.params.get('nonce'), identity)
                 except Exception as e:
                     log.warning(str(e) + ". Cannot satisfy AKAv1 authentication")
                     continue
-                kwargs['password'] = res
+                identity['password'] = res
                 extra = dict(ik=ik, ck=ck)
 
-            username = kwargs.pop('username', None)
+            username = identity.get('username')
             if username is None:
                 log.warning("missing 'username' argument needed by Digest authentication")
                 continue
-            password = kwargs.pop('password', None)
+            password = identity.get('password')
             if password is None:
                 log.warning("missing 'password' argument needed by Digest authentication")
                 continue

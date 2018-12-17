@@ -298,7 +298,7 @@ class RTPStream:
         self.pcapfilter = pcapfilter or {}
         extracriterion = set(self.pcapfilter.keys()) - set(RTPStream.filtercriterions)
         if extracriterion:
-            raise Exception("Unexpected filter criterion {!}".format(list(extracriterion)))
+            raise Exception("Unexpected filter criterion {!r}".format(list(extracriterion)))
         self.eof = False
         self.generator = self._generator()
         try:

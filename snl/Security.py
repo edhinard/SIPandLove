@@ -89,20 +89,63 @@ def md5hash(*params):
     s = b':'.join((param.encode('utf-8') if isinstance(param, str) else param for param in params))
     return hashlib.md5(s).hexdigest()
 
-def AKA(nonce, K, OP):
-    log.info("--- AKA ---")
-    if not Milenage:
-        raise Exception("Milenage not present")
-    log.info("OP   = %s", OP.hex())
-    log.info("K    = %s", K.hex())
-    log.info("nonce= %r", nonce)
+def AKA(nonce, identity):
     try:
         nonce = base64.b64decode(nonce, validate=True)
     except binascii.Error:
         raise Exception("nonce value is not base64 encoded")
-    log.info("nonce= %s", nonce.hex())
     if len(nonce) < 32:
         raise Exception("nonce is {} bytes long (at least 32 expected)".format(len(nonce)))
+    usim = identity.get('usim')
+    if usim:
+        log.info("--- AKA by USIM ---")
+        RAND = nonce[:16]
+        AUTN = nonce[16:32]
+        log.info("RAND = %s", RAND.hex())
+        log.info("AUTN = %s", AUTN.hex())
+
+        ret = usim.authenticate(list(RAND), list(AUTN), ctx='3G')
+        if len(ret) == 1:
+            log.logandraise(Exception('AUTS = %s. need to synchronize USIM', ret[0].hex()))
+        res,ck,ik,kc = ret
+        assert(len(res) == 8)
+        assert(len(ck) == 16)
+        assert(len(ik) == 16)
+        RES = bytes(res)
+        CK = bytes(ck)
+        IK = bytes(ik)
+
+        log.info("RES  = %s", RES.hex())
+        log.info("IK   = %s", IK.hex())
+        log.info("CK   = %s", CK.hex())
+        return RES, IK, CK
+
+    log.info("--- AKA ---")
+    if not Milenage:
+        log.logandraise(Exception("Milenage not present"))
+    K = identity.pop('K', None)
+    if K is None:
+        log.warning("missing K in credentials. Using 0")
+        K = 16*b'\x00'
+    if len(K) < 16:
+        log.warning("K too short. Padding with 0")
+        K = K + (16-len(K))*b'\x00'
+    if len(K) > 16:
+        log.warning("K too long. Keeping MSB")
+        K = K[:16]
+    OP = identity.pop('OP', None)
+    if OP is None:
+        log.warning("missing OP in credentials. Using 0")
+        OP = 16*b'\x00'
+    if len(OP) < 16:
+        log.warning("OP too short. Padding with 0")
+        OP = OP + (16-len(OP))*b'\x00'
+    if len(OP) > 16:
+        log.warning("OP too long. Keeping MSB")
+        OP = OP[:16]
+    log.info("OP   = %s", OP.hex())
+    log.info("K    = %s", K.hex())
+    log.info("nonce= %s", nonce.hex())
     RAND = nonce[:16]
     SQNxorAK = nonce[16:22]
     AMF = nonce[22:24]
