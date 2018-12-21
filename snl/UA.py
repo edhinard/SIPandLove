@@ -67,7 +67,7 @@ class UAbase(Transaction.TransactionManager):
                 log.logandraise(e)
             if i is None:
                 log.logandraise(Exception('cannot read ICCID'))
-            if i != iccid:
+            if iccid != 'any' and i != iccid:
                 log.logandraise(Exception('bad ICCID expecting {} got {}'.format(iccid, i)))
             if imsi is None:
                 log.logandraise(Exception('cannot read IMSI'))
