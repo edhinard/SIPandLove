@@ -223,19 +223,36 @@ class SA:
         self.reserveports()
 
         self.xfrm('''policy add
-                         src {local.ip} dst 0.0.0.0/0 sport {local.portc}
+                         src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto udp
                          dir out
                          tmpl src 0.0.0.0 dst 0.0.0.0/0 proto esp mode transport''')
         self.xfrm('''policy add
-                         src {local.ip} dst 0.0.0.0/0 sport {local.ports}
+                         src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto udp
                          dir out
                          tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         self.xfrm('''policy add
-                         src 0.0.0.0/0 dst {local.ip} dport {local.portc}
+                         src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto udp
                          dir in
                          tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         self.xfrm('''policy add
-                         src 0.0.0.0/0 dst {local.ip} dport {local.ports}
+                         src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto udp
+                         dir in
+                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
+
+        self.xfrm('''policy add
+                         src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto tcp
+                         dir out
+                         tmpl src 0.0.0.0 dst 0.0.0.0/0 proto esp mode transport''')
+        self.xfrm('''policy add
+                         src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto tcp
+                         dir out
+                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
+        self.xfrm('''policy add
+                         src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto tcp
+                         dir in
+                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
+        self.xfrm('''policy add
+                         src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto tcp
                          dir in
                          tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         
@@ -294,22 +311,26 @@ class SA:
             return
 
         # flush SPDB
-        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.portc} dir out''')
-        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} dir out''')
-        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} dir in''')
-        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} dir in''')
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto udp dir out''', False)
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto udp dir out''', False)
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto udp dir in''', False)
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto udp dir in''', False)
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto tcp dir out''', False)
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto tcp dir out''', False)
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto tcp dir in''', False)
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto tcp dir in''', False)
 
         if self.state == 'initialized':
             # free pre-allocated SPI
-            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spic}''')
-            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spis}''')
+            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spic}''', False)
+            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spis}''', False)
 
         elif self.state == 'created':
             # flush SADB
-            self.xfrm('''state del src {local.ip} dst {remote.ip} proto esp spi {remote.spis}''')
-            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spic}''')
-            self.xfrm('''state del src {local.ip} dst {remote.ip} proto esp spi {remote.spic}''')
-            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spis}''')
+            self.xfrm('''state del src {local.ip} dst {remote.ip} proto esp spi {remote.spis}''', False)
+            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spic}''', False)
+            self.xfrm('''state del src {local.ip} dst {remote.ip} proto esp spi {remote.spic}''', False)
+            self.xfrm('''state del src {remote.ip} dst {local.ip} proto esp spi {local.spis}''', False)
 
         # close sockets
         self.local.tcpc.close()
@@ -320,12 +341,12 @@ class SA:
         self.state = 'finished'
 
 
-    def xfrm(self, cmd):
+    def xfrm(self, cmd, raiseonerror=True):
         cmd = ['ip', 'xfrm'] + cmd.format(local=self.local, remote=self.remote, auth=self.auth, enc=self.enc).split()
         p = subprocess.Popen([a.strip('"') for a in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out,err = p.communicate()
         log.info("%s --> %d", ' '.join(cmd), p.returncode)
-        if p.returncode != 0:
+        if p.returncode != 0 and raiseonerror:
             raise Exception("ip xfrm --> {}".format(err.decode('utf-8')))
         return out
 

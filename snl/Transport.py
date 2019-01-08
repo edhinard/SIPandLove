@@ -565,9 +565,11 @@ class ServiceSocket:
         return self.buf,self.remoteaddr
 
     def close(self):
-        assert self in self.pool
-        self.pool.remove(self)
-        self.sock.close()
+        if self.sock:
+            assert self in self.pool
+            self.pool.remove(self)
+            self.sock.close()
+            self.sock = None
 
 class ServiceSockets(list):
     TIMEOUT = 32.
