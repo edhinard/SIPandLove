@@ -71,8 +71,8 @@ class UAbase(Transaction.TransactionManager):
                 log.logandraise(Exception('bad ICCID expecting {} got {}'.format(iccid, i)))
             if imsi is None:
                 log.logandraise(Exception('cannot read IMSI'))
-            realm = 'ims.mnc{:03}.mcc{:03}.3gppnetwork.org'.format(int(imsi[3:5]), int(imsi[:3]))
-            username = '{}@{}'.format(imsi, realm)
+            realm = identity.get('realm', 'ims.mnc{:03}.mcc{:03}.3gppnetwork.org'.format(int(imsi[3:5]), int(imsi[:3])))
+            username = identity.get('username', '{}@{}'.format(imsi, realm))
             self.identity.update(iccid=iccid, usim=usim, imsi=imsi, realm=realm, username=username)
             log.debug("Reading USIM n° {}".format(iccid))
             log.debug("IMSI = {}".format(imsi))
