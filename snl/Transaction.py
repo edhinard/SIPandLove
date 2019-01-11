@@ -186,7 +186,16 @@ class Handler(threading.Thread):
         self.request = request
         self.start()
     def run(self):
-        response = self.handler(self.request)
+        # handlers can return:
+        #  a response alone or
+        #  a response + some functions to be called after the response is sent
+        ret = self.handler(self.request)
+        if isinstance(ret, (list, tuple)):
+            response = ret[0]
+            postfuncs = ret[1:]
+        else:
+            response = ret
+            postfuncs = []
         if response is not None:
             if response.CseqMETHOD not in ('ACK', 'CANCEL') and self.allow:
                 response.addheaders(
@@ -196,6 +205,8 @@ class Handler(threading.Thread):
             self.transaction.eventmessage(response)
             if isinstance(self.request, Message.INVITE) and response.familycode == 2:
                 self.transactionmanager.ackwaiter.new(response)
+        for func in postfuncs:
+            func()
 
 class Timeout(Exception):
     def __init__(self, timer):
