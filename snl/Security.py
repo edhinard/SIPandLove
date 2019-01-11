@@ -238,23 +238,6 @@ class SA:
                          src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto udp
                          dir in
                          tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
-
-        self.xfrm('''policy add
-                         src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto tcp
-                         dir out
-                         tmpl src 0.0.0.0 dst 0.0.0.0/0 proto esp mode transport''')
-        self.xfrm('''policy add
-                         src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto tcp
-                         dir out
-                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
-        self.xfrm('''policy add
-                         src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto tcp
-                         dir in
-                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
-        self.xfrm('''policy add
-                         src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto tcp
-                         dir in
-                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         
         self.state = 'initialized'
 
@@ -277,7 +260,7 @@ class SA:
                          proto esp spi {remote.spis} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {local.ip} dst {remote.ip} sport {local.portc} dport {remote.ports}''')
+                         sel src {local.ip} dst {remote.ip} sport {local.portc} dport {remote.ports} proto udp''')
         
         # SA #2 from remote ports to local portc with local spic
         self.xfrm('''state update
@@ -285,7 +268,7 @@ class SA:
                          proto esp spi {local.spic} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {remote.ip} dst {local.ip} sport {remote.ports} dport {local.portc}''')
+                         sel src {remote.ip} dst {local.ip} sport {remote.ports} dport {local.portc} proto udp''')
         
         # SA #3 from local ports to remote portc with remote spic
         self.xfrm('''state add
@@ -293,7 +276,7 @@ class SA:
                          proto esp spi {remote.spic} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {local.ip} dst {remote.ip} sport {local.ports} dport {remote.portc}''')
+                         sel src {local.ip} dst {remote.ip} sport {local.ports} dport {remote.portc} proto udp''')
 
         # SA #4 from remote portc to local ports with local spis
         self.xfrm('''state update
@@ -301,7 +284,7 @@ class SA:
                          proto esp spi {local.spis} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {remote.ip} dst {local.ip} sport {remote.portc} dport {local.ports}''')
+                         sel src {remote.ip} dst {local.ip} sport {remote.portc} dport {local.ports} proto udp''')
 
         self.state = 'created'
 
@@ -315,10 +298,6 @@ class SA:
         self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto udp dir out''', False)
         self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto udp dir in''', False)
         self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto udp dir in''', False)
-        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto tcp dir out''', False)
-        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto tcp dir out''', False)
-        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto tcp dir in''', False)
-        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto tcp dir in''', False)
 
         if self.state == 'initialized':
             # free pre-allocated SPI
