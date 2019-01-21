@@ -327,13 +327,15 @@ class Transport(multiprocessing.Process):
         localaddr = (self.localip, self.localport)
         tcplisteningsocket = None
         mainudp = None
-        servicesockets = ServiceSockets()
+        servicesockets = []
         sa = None
         while True:
-            sockets = [self.childcommandpipe, self.childmessagepipe] + \
-                      ([tcplisteningsocket] if tcplisteningsocket else []) + \
-                      servicesockets
-            for obj in multiprocessing.connection.wait(sockets, 1):
+            sockets = [self.childcommandpipe, self.childmessagepipe] + servicesockets
+            if tcplisteningsocket:
+                sockets.append(tcplisteningsocket)
+            if mainudp:
+                sockets.append(mainudp)
+            for obj in multiprocessing.connection.wait(sockets, timeout=1):
                 # Command comming from main process
                 if obj == self.childcommandpipe:
                     command = self.childcommandpipe.recv()
@@ -342,7 +344,8 @@ class Transport(multiprocessing.Process):
                             tcplisteningsocket.close()
                         if mainudp:
                             mainudp.close()
-                        servicesockets.flush()
+                        for sock in servicesockets:
+                            sock.close()
                         if sa:
                             sa.terminate()
                         self.childcommandpipe.send(None)
@@ -370,53 +373,52 @@ class Transport(multiprocessing.Process):
                             try:
                                 mainudp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                                 mainudp.bind(localaddr)
-                                servicesockets.new(mainudp)
                                 self.childcommandpipe.send(mainudp.fileno())
                             except Exception as err:
                                 extra = ". errno={}".format(errno.errorcode[err.errno]) if isinstance(err, OSError) else ''
                                 exc = Exception("cannot bind UDP socket to {}:{}{}".format(*localaddr, extra))
                                 self.childcommandpipe.send(exc)
-                    elif command[0] == 'gettcp':
-                        remoteaddr,fd = command[1:]
+                    elif command[0] in ('gettcp', 'gettls'):
+                        tls = bool(command[0] == 'gettls')
+                        remoteaddr,fd = command[1:3]
+                        if tls:
+                            cafile,hostname = command[3:]
+
+                        # try to reuse existing socket
+                        found = None
                         for sock in servicesockets:
-                            if sock.tcp and (sock.fd==fd or sock.remoteaddr==remoteaddr):
+                            if fd==sock.fileno():
+                                found = sock
                                 break
+                        if not found:
+                            for sock in servicesockets:
+                                if remoteaddr==sock.getpeername():
+                                    found = sock
+                                    break
+                        if found:
+                            sock = found
+
+                        # connect a new socket
                         else:
+                            if tls:
+                                try:
+                                    sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=cafile)
+                                except OSError as err:
+                                    exc = Exception("bad CA file {} {}".format(cafile, err))
+                                    self.childcommandpipe.send(exc)
+                                    continue
                             try:
                                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                if tls:
+                                    sslcontext.check_hostname = bool(hostname)
+                                    sock = sslcontext.wrap_socket(sock, server_hostname=hostname)
+                                    sock = ServiceSSLSocket(sock)
+                                else:
+                                    sock = ServiceSocket(sock)
                                 sock.settimeout(2)
                                 sock.bind((self.localip, 0))
                                 sock.connect(remoteaddr)
-                                sock = servicesockets.new(sock)
-                            except socket.timeout as err:
-                                exc = Exception("cannot connect to {}:{}. timeout".format(*remoteaddr))
-                                self.childcommandpipe.send(exc)
-                                continue
-                            except OSError as err:
-                                exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
-                                self.childcommandpipe.send(exc)
-                                continue
-                        self.childcommandpipe.send((sock.fd, sock.localport))
-                    elif command[0] == 'gettls':
-                        remoteaddr,fd,cafile,hostname = command[1:]
-                        for sock in servicesockets:
-                            if sock.tcp and (sock.fd==fd or sock.remoteaddr==remoteaddr):
-                                break
-                        else:
-                            try:
-                                sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=cafile)
-                            except OSError as err:
-                                exc = Exception("bad CA file {} {}".format(cafile, err))
-                                self.childcommandpipe.send(exc)
-                                continue
-                            try:
-                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                sock.settimeout(2)
-                                sock.bind((self.localip, 0))
-                                sock.connect(remoteaddr)
-                                sslcontext.check_hostname = bool(hostname)
-                                sock = sslcontext.wrap_socket(sock, server_hostname=hostname)
-                                sock = servicesockets.new(sock)
+                                servicesockets.append(sock)
                             except socket.timeout as err:
                                 exc = Exception("cannot connect to {}:{}. timeout".format(*remoteaddr))
                                 self.childcommandpipe.send(exc)
@@ -433,7 +435,8 @@ class Transport(multiprocessing.Process):
                                 exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
                                 self.childcommandpipe.send(exc)
                                 continue
-                        self.childcommandpipe.send((sock.fd, sock.localport))
+                            log.info("%s: new service socket fd=%s", self, sock.fileno())
+                        self.childcommandpipe.send((sock.fileno(), sock.getsockname()[1]))
                     elif command[0] == 'sa':
                         try:
                             if command[1] == 'prepare':
@@ -463,10 +466,13 @@ class Transport(multiprocessing.Process):
                 # Message comming from main process --> send to remote address
                 elif obj == self.childmessagepipe:
                     fd,remoteaddr,packet = self.childmessagepipe.recv()
+                    if mainudp and fd==mainudp.fileno():
+                        mainudp.sendto(packet, remoteaddr)
+                        continue
                     for sock in servicesockets:
-                        if sock.fd==fd:
+                        if sock.fileno()==fd:
                             try:
-                                sock.send(packet, remoteaddr)
+                                sock.sendall(packet)
                             except Exception as e:
                                 dispatcherror(*localaddr, *remoteaddr, str(e), packet)
                             break
@@ -475,119 +481,99 @@ class Transport(multiprocessing.Process):
 
                 # Incomming TCP connection --> new socket (will be read in the next result of poll)
                 elif obj == tcplisteningsocket:
-                    sock = obj.accept()[0]
-                    servicesockets.new(sock)
+                    sock = ServiceSocket(obj.accept()[0])
+                    servicesockets.append(sock)
+                    log.info("%s: new service socket fd=%s", self, sock.fileno())
 
                 # Incomming packet --> decode and send to main process
+                elif obj == mainudp:
+                    buf,remoteaddr = mainudp.recvfrom(65536)
+                    decodeinfo = Message.SIPMessage.predecode(buf)
+                    # Discard inconsistent messages
+                    if decodeinfo.status != 'OK':
+                        continue
+
+                    self.childmessagepipe.send((mainudp.fileno(),'UDP',remoteaddr,mainudp.getsockname()[1],decodeinfo))
+
                 elif obj in servicesockets:
-                    buf,remoteaddr = obj.recv()
-                    if obj.udp:
+                    buf = obj.recv(65536)
+                    protocol = 'TCP'
+                    if isinstance(obj, ssl.SSLSocket):
+                        protocol = 'TLS'
+                    while True:
                         decodeinfo = Message.SIPMessage.predecode(buf)
 
-                        # Discard inconsistent messages
+                        # Erroneous messages or messages missing a Content-Length make the stream desynchronized
+                        if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and not decodeinfo.framing):
+                            obj.close()
+                            break
+
+                        # Flush buffer if filled with CRLF
+                        if decodeinfo.status == 'EMPTY':
+                            if buf:
+                                log.info("%s:%s <-%s-- %s:%d (fd=%d)\n%s", obj.localip, protocol, obj.getsockname()[1], *remoteaddr, obj.fileno(), bytes(buf))
+                                del buf[:]
+                            break
+
+                        # Ignore inconsistent messages, wait for the rest of the buffer
                         if decodeinfo.status != 'OK':
-                            continue
+                            break
 
-                        self.childmessagepipe.send((obj.fd,'UDP',remoteaddr,obj.localport,decodeinfo))
+                        self.childmessagepipe.send((obj.fileno(),protocol,obj.getpeername(),obj.getsockname()[1],decodeinfo))
+                        del buf[:decodeinfo.iend]
 
-                    elif obj.tcp:
-                        protocol = 'TCP'
-                        if isinstance(obj.sock, ssl.SSLSocket):
-                            protocol = 'TLS'
-                        # assemble with previous buffer stored in TCPSocket
-                        while True:
-                            decodeinfo = Message.SIPMessage.predecode(buf)
+            # cleanup servicesockets
+            currenttime = time.monotonic()
+            for sock in servicesockets.copy():
+                if currenttime - sock.touchtime > 32:
+                    # service TCP socket that are idle for more than 64*T1 sec are closed
+                    sock.close()
+                    log.info("%s: service socket fd=%s closed for inactivity", self, sock.fileno())
+                    servicesockets.remove(sock)
+                elif sock.fileno() == -1:
+                    log.info("%s: service socket fd=%s closed after EOF", self, sock.fileno())
+                    servicesockets.remove(sock)
 
-                            # Erroneous messages or messages missing a Content-Length make the stream desynchronized
-                            if decodeinfo.status == 'ERROR' or (decodeinfo.status == 'OK' and not decodeinfo.framing):
-                                obj.close()
-                                break
+class ServiceSocketMixin:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.touchtime = time.monotonic()
+        self.recvbuf = bytearray()
 
-                            # Flush buffer if filled with CRLF
-                            if decodeinfo.status == 'EMPTY':
-                                if buf:
-                                    log.info("%s:%s <-%s-- %s:%d (fd=%d)\n%s", obj.localip, protocol, obj.localport, *remoteaddr, obj.fd, bytes(buf))
-                                    del buf[:]
-                                break
-
-                            # Ignore inconsistent messages, wait for the rest of the buffer
-                            if decodeinfo.status != 'OK':
-                                break
-
-                            self.childmessagepipe.send((obj.fd,protocol,remoteaddr,obj.localport,decodeinfo))
-                            del buf[:decodeinfo.iend]
-
-                servicesockets.cleanup()
-
-
-class ServiceSocket:
-    def __init__(self, sock, pool):
-        self.__dict__.update(dict(
-            sock = sock,
-            pool = pool,
-            fd = sock.fileno(),
-            localip = sock.getsockname()[0],
-            localport = sock.getsockname()[1],
-            tcp = bool(sock.type & socket.SOCK_STREAM),
-            udp = bool(sock.type & socket.SOCK_DGRAM)
-        ))
-        if self.tcp:
-            self.__dict__.update(dict(
-                remoteaddr = sock.getpeername(),
-                buf = bytearray(),
-                touchtime = time.monotonic()
-            ))
-    def __repr__(self):
-        return repr(self.sock)
-    def __getattr__(self, attr):
-        value = self.__dict__.get(attr)
-        if value is None:
-            value = getattr(self.sock, attr)
-        return value
-
-    def send(self, packet, remoteaddr):
-        if self.udp:
-            self.sock.sendto(packet, remoteaddr)
-
-        elif self.tcp:
-            self.sock.sendall(packet)
-
-    def recv(self):
-        if self.udp:
-            return self.sock.recvfrom(65536)
-
-        # TCP stream
-        newbuf = self.sock.recv(8192)
+    def recv(self, *args, **kwargs):
+        newbuf = super().recv(*args, **kwargs)
+        self.touchtime = time.monotonic()
         if not newbuf:
             self.close()
-        self.buf += newbuf
+        self.recvbuf += newbuf
+        return self.recvbuf
+
+    def sendall(self, *args, **kwargs):
         self.touchtime = time.monotonic()
-        return self.buf,self.remoteaddr
+        return super().sendall(*args, **kwargs)
 
-    def close(self):
-        if self.sock:
-            assert self in self.pool
-            self.pool.remove(self)
-            self.sock.close()
-            self.sock = None
+class ServiceSocket(ServiceSocketMixin, socket.socket):
+    def __init__(self, sock):
+        assert(sock.type & socket.SOCK_STREAM)
+        super().__init__(family=sock.family,
+                         type=sock.type,
+                         proto=sock.proto,
+                         fileno=sock.fileno())
+        self.settimeout(sock.gettimeout())
+        sock.detach()
 
-class ServiceSockets(list):
-    TIMEOUT = 32.
-    def new(self, sock):
-        sock = ServiceSocket(sock, self)
-        self.append(sock)
-        return sock
-
-    def cleanup(self):
-        # TCP socket that are idle for more than 64*T1 sec are closed [18]
-        currenttime = time.monotonic()
-        for sock in self.copy():
-            if sock.tcp and currenttime - sock.touchtime > self.TIMEOUT:
-                sock.close()
-
-    def flush(self):
-        for sock in self.copy():
-            sock.close()
+class ServiceSSLSocket(ServiceSocketMixin, ssl.SSLSocket):
+    def __init__(self, sock):
+        assert(sock.type & socket.SOCK_STREAM)
+        super().__init__(sock=sock,
+                         family=sock.family,
+                         type=sock.type,
+                         proto=sock.proto,
+                         fileno=sock.fileno(),
+                         _context=sock.context
+        )
+        self.settimeout(sock.gettimeout())
+        sock.detach()
 
 
 class ErrorDispatcher(threading.Thread):
