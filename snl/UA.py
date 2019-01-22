@@ -555,8 +555,7 @@ classcache = {}
 def SIPPhoneClass(*extensions):
     for extension in set(extensions):
         if extension == 'sec-agree':
-            if not Security.SEC_AGREE:
-                log.logandraise(Exception('sec-agree is not possible. try to run script as root'))
+            Security.initsecagree()
         elif extension == 'reg-event':
             pass
         else:

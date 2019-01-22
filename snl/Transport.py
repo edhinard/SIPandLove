@@ -18,6 +18,7 @@ import signal
 import ssl
 import os
 import itertools
+import functools
 log = logging.getLogger('Transport')
 
 from . import Message
@@ -135,7 +136,7 @@ class Transport(multiprocessing.Process):
             raise
 
         self.localsa = self.remotesa = None
-        self.establishedSA = False
+        self.SAestablished = False
 
     def __str__(self):
         return "{}:{}".format(self.localip, self.localport)
@@ -172,7 +173,7 @@ class Transport(multiprocessing.Process):
                 if protocol == 'TCP' and issip:
                     message.length = len(message.body)
 
-                if self.establishedSA:
+                if self.SAestablished:
                     if protocol == 'TCP':
                         fd = self.localsa['tcpc']
                         srcport = self.localsa['portc']
@@ -224,7 +225,7 @@ class Transport(multiprocessing.Process):
                 if protocol == 'TCP':
                     message.length = len(message.body)
 
-                if self.establishedSA:
+                if self.SAestablished:
                     if protocol == 'TCP':
                         fd = self.localsa['tcps']
                         srcport = self.localsa['ports']
@@ -267,7 +268,7 @@ class Transport(multiprocessing.Process):
                             via.params['received'] = srcip
                             via.params['rport'] = srcport
                 esp = ''
-                if self.establishedSA and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
+                if self.SAestablished and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
                     esp = '/ESP'
                 log.info("%s:%s <-%s%s-- %s:%d (fd=%d)\n%s", self.localip, dstport, protocol, esp, srcip, srcport, fd, message)
                 if self.recvcb:
@@ -315,11 +316,11 @@ class Transport(multiprocessing.Process):
 
     def establishSA(self, **kwargs):
         self.remotesa  = self.command('sa', 'establish', kwargs)
-        self.establishedSA = True
+        self.SAestablished = True
 
     def terminateSA(self, **kwargs):
         self.command('sa', 'terminate', kwargs)
-        self.establishedSA = False
+        self.SAestablished = False
         self.localsa = self.remotesa = None
 
     def run(self):
@@ -333,8 +334,12 @@ class Transport(multiprocessing.Process):
             sockets = [self.childcommandpipe, self.childmessagepipe] + servicesockets
             if tcplisteningsocket:
                 sockets.append(tcplisteningsocket)
+            udpsockets = []
             if mainudp:
-                sockets.append(mainudp)
+                udpsockets.append(mainudp)
+            if sa:
+                udpsockets.extend((sa.local.udpc, sa.local.udps))
+            sockets.extend(udpsockets)
             for obj in multiprocessing.connection.wait(sockets, timeout=1):
                 # Command comming from main process
                 if obj == self.childcommandpipe:
@@ -445,13 +450,11 @@ class Transport(multiprocessing.Process):
                                               spis=sa.local.spis,  spic=sa.local.spic,
                                               ports=sa.local.ports,  portc=sa.local.portc,
                                               udpc=sa.local.udpc.fileno(), udps=sa.local.udps.fileno(),
-                                              tcpc=sa.local.tcpc.fileno(), tcps=sa.local.tcps.fileno()
+                                              tcpc=-1, tcps=-1
                                 )
                                 self.childcommandpipe.send(local)
                             elif command[1] == 'establish':
                                 sa.finalize(**command[2])
-                                sa.local.udps = servicesockets.new(sa.local.udps)
-                                sa.local.udpc = servicesockets.new(sa.local.udpc)
                                 remote = dict(ip=sa.remote.ip, spis=sa.remote.spis, spic=sa.remote.spic, ports=sa.remote.ports, portc=sa.remote.portc)
                                 self.childcommandpipe.send(remote)
                             elif command[1] == 'terminate':
@@ -466,16 +469,21 @@ class Transport(multiprocessing.Process):
                 # Message comming from main process --> send to remote address
                 elif obj == self.childmessagepipe:
                     fd,remoteaddr,packet = self.childmessagepipe.recv()
-                    if mainudp and fd==mainudp.fileno():
-                        mainudp.sendto(packet, remoteaddr)
-                        continue
-                    for sock in servicesockets:
+                    send = None
+                    for sock in udpsockets:
                         if sock.fileno()==fd:
-                            try:
-                                sock.sendall(packet)
-                            except Exception as e:
-                                dispatcherror(*localaddr, *remoteaddr, str(e), packet)
+                            send = functools.partial(sock.sendto, packet, remoteaddr)
                             break
+                    if not send:
+                        for sock in servicesockets:
+                            if sock.fileno()==fd:
+                                send = functools.partial(sock.sendall, packet)
+                                break
+                    if send:
+                        try:
+                            send()
+                        except Exception as e:
+                            dispatcherror(*localaddr, *remoteaddr, str(e), packet)
                     else:
                         dispatcherror(*localaddr, *remoteaddr, "cannot find socket with fd={}".format(fd), packet)
 
@@ -486,14 +494,14 @@ class Transport(multiprocessing.Process):
                     log.info("%s: new service socket fd=%s", self, sock.fileno())
 
                 # Incomming packet --> decode and send to main process
-                elif obj == mainudp:
-                    buf,remoteaddr = mainudp.recvfrom(65536)
+                elif obj in udpsockets:
+                    buf,remoteaddr = obj.recvfrom(65536)
                     decodeinfo = Message.SIPMessage.predecode(buf)
                     # Discard inconsistent messages
                     if decodeinfo.status != 'OK':
                         continue
 
-                    self.childmessagepipe.send((mainudp.fileno(),'UDP',remoteaddr,mainudp.getsockname()[1],decodeinfo))
+                    self.childmessagepipe.send((obj.fileno(),'UDP',remoteaddr,obj.getsockname()[1],decodeinfo))
 
                 elif obj in servicesockets:
                     buf = obj.recv(65536)

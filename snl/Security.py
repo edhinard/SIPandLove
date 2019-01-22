@@ -1,9 +1,9 @@
 #! /usr/bin/python3
 # coding: utf-8
 
+import sys
 import socket
 import logging
-import weakref
 import subprocess
 import hashlib
 import base64
@@ -19,14 +19,28 @@ except Exception as e:
     log.warning("cannot import Milenage (%s). AKA authentication is not possible", e)
     Milenage = False
 
-p = subprocess.Popen(['ip', 'xfrm', 'state'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-out,err = p.communicate()
-if p.returncode != 0:
-    log.warning("Cannot run ip xfrm command (%s)", err.decode('utf-8').replace('\n', ' '))
-    SEC_AGREE = False
+SEC_AGREE = False
+for m in sys.modules:
+    if m.split('.',1)[0].startswith('scapy'):
+        try:
+            import scapy.all
+            if not scapy.all.conf.crypto_valid:
+                log.warning("Scapy is loaded but no crypto algo available. Try to run > pip3 install cryptography")
+                break
+            SEC_AGREE = 'scapy'
+            break
+        except Exception as e:
+            log.warning("Scapy seems to be loaded but import scapy.all triggers this: {!r}".format(e))
+            break
 else:
-    SEC_AGREE = True
-
+    log.warning("scapy is not pre-loaded")
+if not SEC_AGREE:
+    p = subprocess.Popen(['ip', 'xfrm', 'state'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    out,err = p.communicate()
+    if p.returncode == 0:
+        SEC_AGREE = 'xfrm'
+    else:
+        log.warning("cannot run xfrm command (try as root)")
 
 def digest(*, request, realm, nonce, algorithm, cnonce, qop, nc, username, password):
     log.info("--DIGEST --")
@@ -175,52 +189,65 @@ def AKA(nonce, identity):
     return RES, IK, CK
 
 
-AUTH_DICT = {
-#    'hmac-md5-96'   : 'md5 0x{}',
-    'hmac-sha-1-96' : 'sha1 0x{}'
-}
-ENC_DICT = {
-    'null'          : 'cipher_null ""',
-#    'des-ede3-cbc'  : 'des3_ede 0x{}',
-#    'aes-cbc'       : 'aes 0x{}'
-}
-IPSEC_ALGS = tuple(AUTH_DICT.keys())
-IPSEC_EALGS = tuple(ENC_DICT.keys())
+# =============================================================================
+# Security Association
 
-class SA:
-#
-# local ip         |         remote ip
-#                      
-#        ---------(1)- spis ->
-#  portc                       ports
-#        <- spic -(2)---------
-#
-#
-#        ---------(3)- spic ->
-#  ports                       portc
-#        <- spis -(4)---------
-#
-    sas = weakref.WeakSet()
-    def __new__(cls, *args, **kwargs):
-        sa = super().__new__(cls)
-        SA.sas.add(sa)
-        return sa
+IPSEC_ALGS = IPSEC_EALGS = ()
+SA = None
+def initsecagree():
+    global IPSEC_ALGS, IPSEC_EALGS
+    global SA
+    if SA:
+        return
+    if SEC_AGREE == 'xfrm':
+        log.info("will use xfrm for SA")
+        SA = SAxfrm
+    elif SEC_AGREE == 'scapy':
+        log.info("will use scapy for SA")
+        SA = SAscapy
+    else:
+        log.logandraise(Exception('sec-agree is not possible: scapy not preloaded and cannot run xfrm'))
+    IPSEC_ALGS = tuple(SA.AUTH_DICT.keys())
+    IPSEC_EALGS = tuple(SA.ENC_DICT.keys())
 
-    class Struct:
-        pass
+#
+# local ip                remote ip
+#
+#        ---------- spis ->
+#  portc                    ports
+#        <- spic ----------
+#
+#
+#        ---------- spic ->
+#  ports                    portc
+#        <- spis ----------
+#
+class Struct:
+    pass
+class SAxfrm:
+    AUTH_DICT = {
+        'hmac-md5-96'   : 'md5 0x{}',
+        'hmac-sha-1-96' : 'sha1 0x{}'
+    }
+    ENC_DICT = {
+        'null'          : 'cipher_null ""',
+        #'des-ede3-cbc'  : 'des3_ede 0x{}',
+        #'aes-cbc'       : 'aes 0x{}'
+    }
 
     def __init__(self, localip, remoteip):
         self.state = 'finished'
         self.auth = None
         self.enc = None
-        self.remote = SA.Struct()
+        self.remote = Struct()
         self.remote.ip = remoteip
         
-        self.local = SA.Struct()
+        self.local = Struct()
         self.local.ip = localip
         self.local.spic = self.allocspi()
         self.local.spis = self.allocspi()
-        self.reserveports()
+        self.local.portc, self.local.tcpc, self.local.udpc = self.reserveoneport()
+        self.local.ports, self.local.tcps, self.local.udps = self.reserveoneport()
 
         self.xfrm('''policy add
                          src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto udp
@@ -241,7 +268,6 @@ class SA:
         
         self.state = 'initialized'
 
-
     def finalize(self, *, spic, spis, portc, ports, ik, ck, alg, ealg):
         if self.state != 'initialized':
             raise RuntimeError("SA not in initialized state")
@@ -251,8 +277,8 @@ class SA:
         self.remote.portc = portc
         self.remote.ports = ports
 
-        self.auth = AUTH_DICT[alg].format(ik.hex())
-        self.enc = ENC_DICT[ealg].format(ck.hex())
+        self.auth = SAxfrm.AUTH_DICT[alg].format(ik.hex())
+        self.enc = SAxfrm.ENC_DICT[ealg].format(ck.hex())
 
         # SA #1 from local portc to remote ports with remote spis
         self.xfrm('''state add
@@ -288,7 +314,6 @@ class SA:
 
         self.state = 'created'
 
-
     def terminate(self):
         if self.state == 'finished':
             return
@@ -319,7 +344,6 @@ class SA:
 
         self.state = 'finished'
 
-
     def xfrm(self, cmd, raiseonerror=True):
         cmd = ['ip', 'xfrm'] + cmd.format(local=self.local, remote=self.remote, auth=self.auth, enc=self.enc).split()
         p = subprocess.Popen([a.strip('"') for a in cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -329,21 +353,14 @@ class SA:
             raise Exception("ip xfrm --> {}".format(err.decode('utf-8')))
         return out
 
-
     SPI_RE = re.compile(br'spi (0x[0-9a-f]+)')
     def allocspi(self):
         resp = self.xfrm('''state allocspi src {remote.ip} dst {local.ip} proto esp''')
-        m = SA.SPI_RE.search(resp)
+        m = SAxfrm.SPI_RE.search(resp)
         if m:
             return int(m.group(1), 16)
         else:
             raise Exception("cannot allocate SPI")
-
-
-    def reserveports(self):
-        self.local.portc, self.local.tcpc, self.local.udpc = self.reserveoneport()
-        self.local.ports, self.local.tcps, self.local.udps = self.reserveoneport()
-
 
     def reserveoneport(self):
         #  - open a TCP socket
@@ -370,9 +387,107 @@ class SA:
         finally:
             for t in tobeclosed:
                 t.close()
-
         return port,tcp,udp
-            
+
+class SASocket(socket.socket):
+    def __init__(self, localip, localport, recvspi):
+        self.localip = localip
+        self.localport = localport
+        self.recvspi = recvspi
+        self.rxsa = self.txsa = None
+        # rx part of the object
+        super().__init__(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ESP)
+        self.bind((self.localip, socket.IPPROTO_ESP))
+        # tx part
+        self.tx = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
+
+    def associate(self, remoteip, remoteport, sendspi, alg, ik, ealg, ck):
+        assert((self.rxsa==None) and (self.txsa==None))
+        self.remoteip = remoteip
+        self.remoteport = remoteport
+        self.rxsa = scapy.all.SecurityAssociation(scapy.all.ESP,
+                                                  spi=self.recvspi,
+                                                  crypt_algo=ealg,
+                                                  crypt_key=ck,
+                                                  auth_algo=alg,
+                                                  auth_key=ik)
+        self.txsa = scapy.all.SecurityAssociation(scapy.all.ESP,
+                                                  spi=sendspi,
+                                                  crypt_algo=ealg,
+                                                  crypt_key=ck,
+                                                  auth_algo=alg,
+                                                  auth_key=ik)
+
+    def recvfrom(self, bufsize):
+        assert((self.rxsa!=None) and (self.txsa!=None))
+        buf = b''
+        data = super().recv(bufsize)
+        esp = scapy.all.IP(data)
+        try:
+            esp = self.rxsa.decrypt(esp)
+            remoteip = esp[scapy.all.IP].src
+            remoteport = esp[scapy.all.UDP].sport
+            buf = bytes(esp[scapy.all.Raw])
+        except Exception as e:
+            return b'',(None,0)
+        if buf and (remoteip==self.remoteip) and (remoteport==self.remoteport):
+            return buf,(remoteip,remoteport)
+        else:
+            return b'',(None,0)
+
+    def sendto(self, packet, remoteaddr):
+        assert((self.rxsa!=None) and (self.txsa!=None))
+        remoteip,remoteport = remoteaddr
+        assert(remoteip == self.remoteip)
+        assert(remoteport == self.remoteport)
+        ip = scapy.all.IP(src=self.localip, dst=remoteip)/scapy.all.UDP(sport=self.localport, dport=remoteport)/scapy.all.Raw(packet)
+        esp = self.txsa.encrypt(ip)
+        for frag in scapy.all.fragment(esp):
+            self.tx.sendto(bytes(frag), 0, (remoteip, 0))
+
+class SAscapy:
+    AUTH_DICT = {
+        'hmac-md5-96'   : 'HMAC-MD5-96',
+        'hmac-sha-1-96' : 'HMAC-SHA1-96'
+    }
+    ENC_DICT = {
+        'null'          : 'NULL',
+    }
+
+    def __init__(self, localip, remoteip):
+        self.state = 'finished'
+        self.remote = Struct()
+        self.remote.ip = remoteip
+        self.local = Struct()
+        self.local.ip = localip
+        self.local.spic = random.randint(10000, 20000)
+        self.local.spis = random.randint(10000, 20000)
+        self.local.portc = random.randint(10000, 20000)
+        self.local.ports = random.randint(10000, 20000)
+        self.local.udpc = SASocket(self.local.ip, self.local.portc, self.local.spic)
+        self.local.udps = SASocket(self.local.ip, self.local.ports, self.local.spis)
+        self.state = 'initialized'
+
+    def finalize(self, *, spic, spis, portc, ports, ik, ck, alg, ealg):
+        if self.state != 'initialized':
+            raise RuntimeError("SA not in initialized state")
+        self.remote.spic = spic
+        self.remote.spis = spis
+        self.remote.portc = portc
+        self.remote.ports = ports
+        self.local.udpc.associate(self.remote.ip, self.remote.ports, self.remote.spis, SAscapy.AUTH_DICT[alg], ik, SAscapy.ENC_DICT[ealg], ck)
+        self.local.udps.associate(self.remote.ip, self.remote.portc, self.remote.spic, SAscapy.AUTH_DICT[alg], ik, SAscapy.ENC_DICT[ealg], ck)
+        self.state = 'created'
+
+    def terminate(self):
+        if self.state == 'finished':
+            return
+        # close sockets
+        self.local.udpc.close()
+        self.local.udps.close()
+        self.state = 'finished'
+
+
 if __name__ == '__main__':
     import sys
     log.setLevel('DEBUG')
