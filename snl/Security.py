@@ -24,7 +24,7 @@ for m in sys.modules:
     if m.split('.',1)[0].startswith('scapy'):
         try:
             import scapy.all
-            if not scapy.all.conf.crypto_valid:
+            if not scapy.all.HMAC:
                 log.warning("Scapy is loaded but no crypto algo available. Try to run > pip3 install cryptography")
                 break
             SEC_AGREE = 'scapy'
