@@ -405,6 +405,8 @@ class SASocket(socket.socket):
         assert((self.rxsa==None) and (self.txsa==None))
         self.remoteip = remoteip
         self.remoteport = remoteport
+        if ealg == 'NULL':
+            ck = None
         self.rxsa = scapy.all.SecurityAssociation(scapy.all.ESP,
                                                   spi=self.recvspi,
                                                   crypt_algo=ealg,

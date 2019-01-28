@@ -442,6 +442,11 @@ class Allow_Events(Header):
 class Subscription_State(Header):
     pass
 
+class P_Associated_URI(Header):
+    pass
+class P_Called_Party_ID(Header):
+    pass
+
 if __name__ == '__main__':
     import sys
     

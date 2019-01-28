@@ -1255,3 +1255,72 @@ def Subscription_StateParse(headervalue):
 def Subscription_StateDisplay(state):
     params = (";{}{}".format(k, "={}".format(v) if v is not None else "") for k,v in state.params.items())
     return "{}{}".format(state.state, ''.join(params))
+
+
+#RFC 3455              3GPP SIP P-Header Extensions
+#   P-Associated-URI       = "P-Associated-URI" HCOLON
+#                            (p-aso-uri-spec)
+#                            *(COMMA p-aso-uri-spec)
+#   p-aso-uri-spec         = name-addr *(SEMI ai-param)
+#   ai-param               = generic-param
+#   P-Called-Party-ID      = "P-Called-Party-ID" HCOLON
+#                            called-pty-id-spec
+#   called-pty-id-spec     = name-addr *(SEMI cpid-param)
+#   cpid-param             = generic-param
+#   P-Visited-Network-ID   = "P-Visited-Network-ID" HCOLON
+#                             vnetwork-spec
+#                             *(COMMA vnetwork-spec)
+#   vnetwork-spec          = (token / quoted-string)
+#                             *(SEMI vnetwork-param)
+#   vnetwork-param         = generic-param
+#   P-Access-Network-Info  = "P-Access-Network-Info" HCOLON
+#                            access-net-spec
+#   access-net-spec        = access-type *(SEMI access-info)
+#   access-type            = "IEEE-802.11a" / "IEEE-802.11b" /
+#                            "3GPP-GERAN" / "3GPP-UTRAN-FDD" /
+#                            "3GPP-UTRAN-TDD" /
+#                            "3GPP-CDMA2000" / token
+#   access-info            = cgi-3gpp / utran-cell-id-3gpp /
+#                            extension-access-info
+#   extension-access-info  = gen-value
+#   cgi-3gpp               = "cgi-3gpp" EQUAL
+#                            (token / quoted-string)
+#   utran-cell-id-3gpp     = "utran-cell-id-3gpp" EQUAL
+#                            (token / quoted-string)
+#   P-Charging-Addr        = "P-Charging-Function-Addresses" HCOLON
+#                            charge-addr-params
+#                            *(SEMI charge-addr-params)
+#   charge-addr-params     = ccf / ecf / generic-param
+#   ccf                    = "ccf" EQUAL gen-value
+#   ecf                    = "ecf" EQUAL gen-value
+#   P-Charging-Vector     = "P-Charging-Vector" HCOLON icid-value
+#                           *(SEMI charge-params)
+#   charge-params         = icid-gen-addr / orig-ioi /
+#                           term-ioi / generic-param
+#   icid-value            = "icid-value" EQUAL gen-value
+#   icid-gen-addr         = "icid-generated-at" EQUAL host
+#   orig-ioi              = "orig-ioi" EQUAL gen-value
+#   term-ioi              = "term-ioi" EQUAL gen-value
+ai_param = generic_param
+Pid_param = name_addr + pp.ZeroOrMore(pp.Suppress(SEMI) + ai_param)('hparams')
+
+Pid = Parser('P-ID header', pp.Group(Pid_param) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + Pid_param)))
+P_Associated_URIArgs = ('display', 'address', 'params')
+def P_Associated_URIParse(headervalue):
+    for res in Route.parse(headervalue):
+        display = res.get('display')
+        address = URI(res)
+        params = res.get('hparams')
+        if params:
+            ks = params[0::2]; vs = params[1::2]
+            params = ParameterDict(zip(ks,vs))
+        else:
+            params = ParameterDict()
+        yield dict(display=display, address=address, params=params)
+P_Associated_URIMultiple = True
+P_Associated_URIDisplay = ContactDisplay
+
+P_Called_Party_IDArgs = P_Associated_URIArgs
+P_Called_Party_IDParse = P_Associated_URIParse
+P_Called_Party_IDMultiple = True
+P_Called_Party_IDDisplay = P_Associated_URIDisplay
