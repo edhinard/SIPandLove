@@ -4,9 +4,13 @@ import random
 import string
 
 _branchtemplate = 'z9hG4bK_{}'
-_prefix = 'SIPandLove'
-_shortprefix = 'SNL'
-_suffix = ''
+
+def settags(*, prefix='SIPandLove', shortprefix='SNL', suffix=''):
+    global _prefix,_shortprefix,_suffix
+    _prefix = prefix
+    _shortprefix = shortprefix
+    _suffix = suffix
+settags()
 
 vowels = 'aeiouyAEIOUY'
 consonants = ''.join(set(string.ascii_lowercase) - set(vowels))
