@@ -267,7 +267,7 @@ class RTP:
         self.version,self.P,self.X,self.CC,self.M = version,P,X,CC,M
 
     def __str__(self):
-        return "PT={} seq=0x{:x} TS=0x{:x} SSRC=0x{:x} + {}bytes".format(self.PT, self.seq, self.TS, self.SSRC, len(self.payload))
+        return "PT={} SSRC=0x{:x} Seq={} Time={} + {}bytes".format(self.PT, self.SSRC, self.seq, self.TS, len(self.payload))
 
     @staticmethod
     def frombytes(buf):
