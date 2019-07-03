@@ -661,8 +661,6 @@ class INVITEserverTransaction(ServerTransaction):
         self.transport.send(self.lastresponse)
         self.state = 'Completed'
 
-    Completed_Request = Proceeding_Request
-
     def Completed_TimerG(self):
         self.transport.send(self.lastresponse)
         self.Gduration = min(2*self.Gduration, self.T2)
@@ -678,7 +676,7 @@ class INVITEserverTransaction(ServerTransaction):
             self.state = 'Confirmed'
             self.armtimer('I', self.T4)
         else:
-            log.warning("%s expecting ACK. Request ignored", self)
+            self.transport.send(self.lastresponse)
 
     def Confirmed_TimerI(self):
         self.state = 'Terminated'
@@ -752,10 +750,11 @@ class NonINVITEserverTransaction(ServerTransaction):
     def Proceeding_Error(self):
         self.state = 'Terminated'
         return True
-        
+
     Proceeding_2xx = Proceeding_3xx = Proceeding_4xx = Proceeding_5xx = Proceeding_6xx = Trying_23456
 
-    Completed_Request = Proceeding_Request
+    def Completed_Request(self):
+        self.transport.send(self.lastresponse)
 
     def Completed_TimerJ(self):
         self.state = 'Terminated'
