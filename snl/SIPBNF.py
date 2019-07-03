@@ -1226,7 +1226,7 @@ def EventDisplay(event):
     params = (";{}{}".format(k, "={}".format(v) if v is not None else "") for k,v in event.params.items())
     return "{}{}".format(event.event, ''.join(params))
 
-Allow_Events = Parser('Allow-Events header', event_type + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + event_type)))
+Allow_Events = Parser('Allow-Events header', pp.Group(event_type) + pp.ZeroOrMore(pp.Group(pp.Suppress(COMMA) + event_type)))
 Allow_EventsAlias = 'u'
 Allow_EventsArgs = ('event',)
 def Allow_EventsParse(headervalue):
