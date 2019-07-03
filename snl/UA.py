@@ -209,9 +209,9 @@ class Registration:
         if self.autounreg and self.addressofrecord:
             tobeunregistered.add(self)
 
-    def register(self, expires=None, *headers, async=False):
+    def register(self, expires=None, *headers, asynch=False):
         expires = expires if expires is not None else self.expires
-        if not async:
+        if not asynch:
             return self._register(expires, *headers)
         threading.Thread(target=self._register, args=(expires,*headers), daemon=True).start()
 
@@ -248,7 +248,7 @@ class Registration:
                     self.registered = True
                     log.info("%s registered for %ds", self, gotexpires)
                     if self.reregister:
-                        self.regtimer = Timer.arm(gotexpires*self.reregister, self.register, expires, *headers, async=True)
+                        self.regtimer = Timer.arm(gotexpires*self.reregister, self.register, expires, *headers, asynch=True)
                     if 'reg-event' in self.extensions:
                         self.subscribe('reg', expires=expires)
                     self.associateduris = [h.address for h in result.success.headers('P-Associated-URI')]
