@@ -141,23 +141,35 @@ class UAbase(Transaction.TransactionManager):
     def send(self, message):
             self.transport.send(message, self.proxy)
 
-    def options(self):
+    def options(self, *headers):
         log.info("%s querying for capabilities", self)
-        options = Message.OPTIONS(
-            self.domain,
+        options = Message.OPTIONS(self.domain, *headers)
+        options.addheaders(
             Header.From(self.addressofrecord),
             Header.To(self.addressofrecord),
-            Header.Content_Type('application/sdp')
+            Header.Content_Type('application/sdp'),
+            ifmissing=True
         )
         for result in self.sendmessage(options):
-            if result.success:
+            if result.success is not None:
                 log.info("%s query ok", self)
-            elif result.error:
+                return result.success
+            elif result.error is not None:
                 log.info("%s querying failed: %d %s", self, result.error.code, result.error.reason)
-            elif result.provisional:
+                return result.error
+            elif result.provisional is not None:
                 pass
             elif result.exception:
                 log.info("%s querying failed: %s", self, result.exception)
+                return result.exception
+
+    def OPTIONS_handler(self, options):
+        response = options.response(200)
+        if self.allow:
+            response.addheaders(
+                'Allow: {}'.format(', '.join(self.allow))
+            )
+        return response
 
 tobeunregistered = weakref.WeakSet()
 @atexit.register
