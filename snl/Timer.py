@@ -41,7 +41,10 @@ class TimerManager(threading.Thread):
     def run(self):
         log.debug("Starting timer thread")
         while True:
-            idt = self.pipe.recv()
+            try:
+                idt = self.pipe.recv()
+            except EOFError:
+                break
             with self.lock:
                 cb,args,kwargs = self.timers.pop(idt, (None, None, None))
             if cb:
@@ -50,6 +53,7 @@ class TimerManager(threading.Thread):
                     cb(*args, **kwargs)
                 except Exception as e:
                     log.warning(e)
+        log.debug("Stoping timer thread")
 
     # Process loop
     @staticmethod
