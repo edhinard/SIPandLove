@@ -268,11 +268,9 @@ class SIPMessage(object):
 
     def _getcallid(self):
         c = self.header('Call-Id')
-        if c:
-#            if hasattr(c, 'callid'):
-                return c.callid
-#            else:
-#                return c.value
+        if not c:
+            c = self.addheaders(Header.Call_ID(callid=Tags.callid()))
+        return c.callid
     def _setcallid(self, cid):
         c = self.header('Call-Id')
         if c:
