@@ -109,16 +109,16 @@ class UAbase(Transaction.TransactionManager):
 
     class Result:
         def __init__(self, event):
-            self.success = self.provisional = self.error = self.exception = None
+            self.success = self.provisional = self.error = self.exception = False
             if isinstance(event, Message.SIPResponse):
                 if event.familycode == 2:
-                    self.success = event
+                    self.success = True
                 elif event.familycode == 1:
-                    self.provisional = event
+                    self.provisional = True
                 else:
-                    self.error = event
+                    self.error = True
             elif isinstance(event, Exception):
-                self.exception = event
+                self.exception = True
 
     def sendmessage(self, message):
         if 'sec-agree' in self.extensions:
@@ -133,9 +133,8 @@ class UAbase(Transaction.TransactionManager):
             event = transaction.wait()
             if event is None:
                 return
-            result = UAbase.Result(event)
-            yield result
-            if result.provisional is None:
+            yield result(event),event
+            if not result.provisional:
                 return
 
     def send(self, message):
@@ -150,18 +149,18 @@ class UAbase(Transaction.TransactionManager):
             Header.Content_Type('application/sdp'),
             ifmissing=True
         )
-        for result in self.sendmessage(options):
-            if result.success is not None:
+        for result,event in self.sendmessage(options):
+            if result.success:
                 log.info("%s query ok", self)
-                return result.success
-            elif result.error is not None:
-                log.info("%s querying failed: %d %s", self, result.error.code, result.error.reason)
-                return result.error
-            elif result.provisional is not None:
+                return event
+            elif result.error:
+                log.info("%s querying failed: %d %s", self, event.code, event.reason)
+                return
+            elif result.provisional:
                 pass
             elif result.exception:
-                log.info("%s querying failed: %s", self, result.exception)
-                return result.exception
+                log.info("%s querying failed: %s", self, event)
+                return
 
     def OPTIONS_handler(self, options):
         response = options.response(200)
@@ -179,7 +178,7 @@ def unregisterphones():
         if phone.registered:
             phone.register(0)
 
-class Registration:
+class RegistrationManager:
     def __init__(self, registration={}, **kwargs):
         registration = dict(registration)
         self.autoreg = registration.pop('autoreg', True)
@@ -235,13 +234,13 @@ class Registration:
             self.registermessage.addheaders(*headers, replace=True)
             self.registermessage.seq += 1
         self.registermessage.addheaders(Header.Expires(delta=expires), replace=True)
-        for result in self.sendmessage(self.registermessage):
-            if result.success is not None:
+        for result,event in self.sendmessage(self.registermessage):
+            if result.success:
                 gotexpires = 0
-                expiresheader = result.success.header('Expires')
+                expiresheader = event.header('Expires')
                 if expiresheader:
                     gotexpires = expiresheader.delta
-                contactheader = result.success.header('Contact')
+                contactheader = event.header('Contact')
                 if contactheader:
                     gotexpires = contactheader.params.get('expires')
                 if gotexpires > 0:
@@ -251,33 +250,34 @@ class Registration:
                         self.regtimer = Timer.arm(gotexpires*self.reregister, self.register, expires, *headers, asynch=True)
                     if 'reg-event' in self.extensions:
                         self.subscribe('reg', expires=expires)
-                    self.associateduris = [h.address for h in result.success.headers('P-Associated-URI')]
+                    self.associateduris = [h.address for h in event.headers('P-Associated-URI')]
+                    return True
                 else:
                     self.registered = False
                     self.registermessage = None
                     log.info("%s unregistered", self)
-                return result.success
+                    return False
 
-            elif result.error is not None:
-                if result.error.code == 423:
-                    minexpires = result.error.header('Min-Expires')
-                    log.info("%s registering failed: %s %s, %r", self, result.error.code, result.error.reason, minexpires)
+            elif result.error:
+                if event.code == 423:
+                    minexpires = event.header('Min-Expires')
+                    log.info("%s registering failed: %s %s, %r", self, event.code, event.reason, minexpires)
                     if minexpires:
                         return self.register(minexpires.delta, *headers)
                 self.registermessage = None
-                log.info("%s registering failed: %s %s", self, result.error.code, result.error.reason)
-                return result.error
+                log.info("%s registering failed: %s %s", self, event.code, event.reason)
+                return False
 
             elif result.provisional:
                 pass
 
             elif result.exception:
                 self.registermessage = None
-                log.info("%s registering failed: %s", self, result.exception)
-                return None
+                log.info("%s registering failed: %s", self, event)
+                return False
 
 
-class Authentication:
+class AuthenticationManager:
     def __init__(self, **kwargs):
         self.sa = None
         self.savedproxy = None
@@ -296,11 +296,11 @@ class Authentication:
                 for ealg in Security.IPSEC_EALGS:
                     self.saheaders.append(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
         message.addheaders(*self.saheaders, replace=True)
-        for result in super().sendmessage(message):
-            if result.error is not None and result.error.code in (401, 407):
+        for result,event in super().sendmessage(message):
+            if result.error and event.code in (401, 407):
                 if needsecurity:
                     bestq = -1
-                    for sec in result.error.headers('security-server'):
+                    for sec in event.headers('security-server'):
                         q = sec.params.get('q',0.)
                         prot = sec.params.get('prot','esp')
                         mod = sec.params.get('mod','trans')
@@ -314,15 +314,16 @@ class Authentication:
                             securityserverparams = params
                     if bestq == -1:
                         log.warning("%s no matching algorithm found for SA", self)
-                        yield result
-                log.info("%s %d retrying %s with authentication", self, result.error.code, message.METHOD)
-                auth = message.authenticationheader(result.error, **self.identity)
+                        yield result,event
+                log.info("%s %d retrying %s with authentication", self, event.code, message.METHOD)
+                auth = message.authenticationheader(event, **self.identity)
                 if auth.header is None:
-                    yield UAbase.Result(Exception(auth.error))
+                    error = Exception(auth.error)
+                    yield UAbase.Result(error),error
                     return
                 if needsecurity:
                     self.transport.establishSA(**securityserverparams, **auth.extra)
-                    for sec in result.error.headers('security-server'):
+                    for sec in event.headers('security-server'):
                         verify = Header.Security_Verify(**dict(sec))
                         message.addheaders(verify)
                         self.saheaders.append(verify)
@@ -335,11 +336,11 @@ class Authentication:
                 yield from super().sendmessage(message)
                 return
             else:
-                yield result
+                yield result,event
 
     def _register(self, expires=3600, *headers):
-        result = super()._register(expires, *headers)
-        if expires==0 and result and self.sa:
+        registered = super()._register(expires, *headers)
+        if expires==0 and self.sa:
             self.transport.terminateSA()
             self.sa = None
             if self.savedproxy:
@@ -347,9 +348,9 @@ class Authentication:
                 self.savedproxy = None
             self.saheaders = []
             self.contacturi.port = self.transport.localport
-        return result
+        return registered
 
-class Session:
+class SessionManager:
     def __init__(self, session={}, **kwargs):
         session = dict(session)
         self.mediaclass = session.pop('media', Media.Media)
@@ -392,13 +393,13 @@ class Session:
         media = self.mediaclass(ua=self, **self.mediaargs)
         invite.setbody(*media.getlocaloffer())
         log.info("%s inviting %s", self, touri)
-        for result in self.sendmessage(invite):
-            if result.success is not None:
+        for result,event in self.sendmessage(invite):
+            if result.success:
                 log.info("%s invitation ok", self)
-                session = Dialog.Session(invite, result.success, uac=True)
+                session = Dialog.Session(invite, event, uac=True)
                 self.addsession(session, media)
                 try:
-                    if not media.setremoteoffer(result.success.body):
+                    if not media.setremoteoffer(event.body):
                         log.info("%s incompatible codecs -> bying", self)
                         self.bye(session)
                         return
@@ -408,15 +409,15 @@ class Session:
                     self.bye(session)
                     return
 
-            elif result.error is not None:
-                log.info("%s invitation failed: %s %s", self, result.error.code, result.error.reason)
+            elif result.error:
+                log.info("%s invitation failed: %s %s", self, event.code, event.reason)
                 return
 
-            elif result.provisional is not None:
+            elif result.provisional:
                 pass
 
-            elif result.exception is not None:
-                log.info("%s invitation failed: %s", self, result.exception)
+            elif result.exception:
+                log.info("%s invitation failed: %s", self, event)
                 return
 
     def askTU(self, invite):
@@ -469,20 +470,20 @@ class Session:
                           Header.To(session.remoteuri, params=dict(tag=session.remotetag)),
                           Header.CSeq(seq=session.localseq, method='BYE'))
         media.stop()
-        for result in self.sendmessage(bye):
+        for result,event in self.sendmessage(bye):
             if result.success:
                 log.info("%s closing ok", self)
                 return
 
             elif result.error:
-                log.info("%s closing failed: %s %s", self, result.error.code, result.error.reason)
+                log.info("%s closing failed: %s %s", self, event.code, event.reason)
                 return
 
             elif result.provisional:
                 pass
 
             elif result.exception:
-                log.info("%s closing failed: %s", self, result.exception)
+                log.info("%s closing failed: %s", self, event)
                 return
 
     def BYE_handler(self, bye):
@@ -498,7 +499,7 @@ class Session:
         return bye.response(200)
 
 
-class Cancelation:
+class CancelationManager:
     def CANCEL_handler(self, cancel):
         transaction = self.transactionmatching(cancel, matchonlyonbranch=True)
         if transaction:
@@ -512,7 +513,7 @@ class Cancelation:
         log.info("%s invalid cancelation from %s", self, cancel.fromaddr)
         return cancel.response(481)
 
-class Notification:
+class NotificationManager:
     class Subscription:
         def __init__(self):
             self.subscribe = None
@@ -527,7 +528,7 @@ class Notification:
 
     def subscribe(self, event, expires, *headers):
         if event not in self.subscriptions:
-            self.subscriptions[event] = Notification.Subscription()
+            self.subscriptions[event] = NotificationManager.Subscription()
         subscription = self.subscriptions[event]
 
         if subscription.subscribe is None:
@@ -545,21 +546,21 @@ class Notification:
         subscription.subscribe.addheaders(Header.Expires(delta=expires), replace=True)
 
         log.info("%s subscribing to %r", self, event)
-        for result in self.sendmessage(subscription.subscribe):
-            if result.success is not None:
+        for result,event in self.sendmessage(subscription.subscribe):
+            if result.success:
                 log.info("%s subscription ok", self)
                 return
 
-            elif result.error is not None:
-                log.info("%s subscription failed: %s %s", self, result.error.code, result.error.reason)
+            elif result.error:
+                log.info("%s subscription failed: %s %s", self, event.code, event.reason)
                 self.subscription.remove(event)
                 return
 
-            elif result.provisional is not None:
+            elif result.provisional:
                 pass
 
-            elif result.exception is not None:
-                log.info("%s subscription failed: %s", self, result.exception)
+            elif result.exception:
+                log.info("%s subscription failed: %s", self, event)
                 self.subscription.remove(event)
                 return
 
@@ -578,7 +579,7 @@ def SIPPhoneClass(*extensions):
     ext = frozenset(extensions)
 
     if ext not in classcache:
-        class SIPPhone(Notification, Cancelation, Session, Authentication, Registration, UAbase):
+        class SIPPhone(NotificationManager, CancelationManager, SessionManager, AuthenticationManager, RegistrationManager, UAbase):
             extensions = ext
         classcache[ext] = SIPPhone
     return classcache[ext]
