@@ -133,7 +133,8 @@ class UAbase(Transaction.TransactionManager):
             event = transaction.wait()
             if event is None:
                 return
-            yield result(event),event
+            result = UAbase.Result(event)
+            yield result,event
             if not result.provisional:
                 return
 
