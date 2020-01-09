@@ -97,7 +97,7 @@ class TransactionManager(threading.Thread):
                    and transaction.lastresponse.familycode == 2:
                     ack = transaction.request.ack(message)
                     addr = transaction.addr
-                    newtransaction = ACKclientTransaction(ack, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
+                    newtransaction = ACKclientTransaction(ack, transaction.id, self.transport, addr, T1=self.T1, T2=self.T2, T4=self.T4)
                     with self.lock:
                         self.transactions.append(newtransaction)
             else:
@@ -467,12 +467,9 @@ class INVITEclientTransaction(ClientTransaction):
 #                         |           |
 #                         +-----------+
 class ACKclientTransaction(ClientTransaction):
-    @staticmethod
-    def identifier(message):
-        ident = ClientTransaction.identifier(message)
-        if ident[-1] == 'INVITE':
-            return (*ident[:-1], 'ACK')
-        return ident
+    def __init__(self, request, ident, *args, **kwargs):
+        super().__init__(request, *args, **kwargs)
+        self.id = ident
     state = 'Proceeding'
     def init(self):
         self.transport.send(self.request, self.addr)
