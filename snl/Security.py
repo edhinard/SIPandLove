@@ -226,8 +226,8 @@ class Struct:
     pass
 class SAxfrm:
     AUTH_DICT = {
-        'hmac-md5-96'   : 'md5 0x{}',
-        'hmac-sha-1-96' : 'sha1 0x{}'
+        'hmac-sha-1-96' : 'sha1 0x{}',
+        'hmac-md5-96'   : 'md5 0x{}'
     }
     ENC_DICT = {
         'null'          : 'cipher_null ""',
@@ -449,8 +449,8 @@ class SASocket(socket.socket):
 
 class SAscapy:
     AUTH_DICT = {
-        'hmac-md5-96'   : 'HMAC-MD5-96',
-        'hmac-sha-1-96' : 'HMAC-SHA1-96'
+        'hmac-sha-1-96' : 'HMAC-SHA1-96',
+        'hmac-md5-96'   : 'HMAC-MD5-96'
     }
     ENC_DICT = {
         'null'          : 'NULL',
