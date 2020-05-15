@@ -458,6 +458,9 @@ class INVITE(SIPRequest):
         uri = response.contacturi if response.familycode == 2 else self.uri
         ack = ACK(uri, *self.headers('from', 'cseq', 'call-id', 'via'), response.header('to'))
         ack.header('CSeq').method = 'ACK'
+        route = response.header('Record-Route')
+        if route:
+            ack.addheaders('Route: {}'.format(route.value))
         return ack
 
 class ACK(SIPRequest):
