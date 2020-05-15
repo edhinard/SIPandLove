@@ -64,6 +64,7 @@ for submodule,level in (('Header',      'WARNING'),
                         ('Transport',   'INFO'),
                         ('UA',          'INFO')):
     log = logging.getLogger(submodule)
+    log.propagate = False
     log.setLevel(level)
     log.addHandler(loghandler)
     loggers[submodule] = log
