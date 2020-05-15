@@ -384,10 +384,11 @@ class Transport(multiprocessing.Process):
                                 exc = Exception("cannot bind UDP socket to {}:{}{}".format(*localaddr, extra))
                                 self.childcommandpipe.send(exc)
                     elif command[0] in ('gettcp', 'gettls'):
-                        tls = bool(command[0] == 'gettls')
                         remoteaddr,fd = command[1:3]
-                        if tls:
-                            cafile,hostname = command[3:]
+                        if command[0] == 'gettls':
+                            tls = command[3:]
+                        else:
+                            tls = None
 
                         # try to reuse existing socket
                         found = None
@@ -405,21 +406,9 @@ class Transport(multiprocessing.Process):
 
                         # connect a new socket
                         else:
-                            if tls:
-                                try:
-                                    sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=cafile)
-                                except OSError as err:
-                                    exc = Exception("bad CA file {} {}".format(cafile, err))
-                                    self.childcommandpipe.send(exc)
-                                    continue
                             try:
                                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                if tls:
-                                    sslcontext.check_hostname = bool(hostname)
-                                    sock = sslcontext.wrap_socket(sock, server_hostname=hostname)
-                                    sock = ServiceSSLSocket(sock)
-                                else:
-                                    sock = ServiceSocket(sock)
+                                sock = ServiceSocketMixin.wrap(sock, tls)
                                 sock.settimeout(2)
                                 sock.bind((self.localip, 0))
                                 sock.connect(remoteaddr)
@@ -428,16 +417,16 @@ class Transport(multiprocessing.Process):
                                 exc = Exception("cannot connect to {}:{}. timeout".format(*remoteaddr))
                                 self.childcommandpipe.send(exc)
                                 continue
-                            except ssl.CertificateError as err:
-                                exc = Exception("cannot connect to {}:{}. {}".format(*remoteaddr, err))
-                                self.childcommandpipe.send(exc)
-                                continue
                             except ssl.SSLError as err:
                                 exc = Exception("cannot connect to {}:{}. {} {}".format(*remoteaddr, err.library, err.reason))
                                 self.childcommandpipe.send(exc)
                                 continue
                             except OSError as err:
                                 exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
+                                self.childcommandpipe.send(exc)
+                                continue
+                            except Exception as err:
+                                exc = Exception("cannot connect to {}:{}. {}".format(*remoteaddr, err))
                                 self.childcommandpipe.send(exc)
                                 continue
                             log.info("%s: new service socket fd=%s", self, sock.fileno())
@@ -543,8 +532,32 @@ class Transport(multiprocessing.Process):
                     servicesockets.remove(sock)
 
 class ServiceSocketMixin:
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    @staticmethod
+    def wrap(sock, tls):
+        if tls is None:
+            return ServiceSocket(sock)
+
+        cafile,hostname = tls
+        try:
+            sslcontext = ssl.create_default_context(purpose=ssl.Purpose.SERVER_AUTH, cafile=cafile)
+            if cafile is None:
+                sslcontext.check_hostname = False
+                sslcontext.verify_mode = ssl.CERT_NONE
+            else:
+                sslcontext.check_hostname = bool(hostname)
+        except OSError as err:
+            raise Exception("bad CA file {} {}".format(cafile, err))
+        if sys.hexversion < 0x03070000:
+            sock = sslcontext.wrap_socket(sock, server_hostname=hostname)
+            sock = ServiceSSLSocket(sock)
+        elif sys.hexversion >= 0x03070000:
+            sslcontext.sslsocket_class = ServiceSSLSocket
+            sock = sslcontext.wrap_socket(sock, server_hostname=hostname)
+            sock.serviceinit()
+
+        return sock
+
+    def serviceinit(self):
         self.touchtime = time.monotonic()
         self.recvbuf = bytearray()
 
@@ -563,26 +576,32 @@ class ServiceSocketMixin:
 class ServiceSocket(ServiceSocketMixin, socket.socket):
     def __init__(self, sock):
         assert(sock.type & socket.SOCK_STREAM)
-        super().__init__(family=sock.family,
-                         type=sock.type,
-                         proto=sock.proto,
-                         fileno=sock.fileno())
+        socket.socket.__init__(
+            self,
+            family=sock.family,
+            type=sock.type,
+            proto=sock.proto,
+            fileno=sock.fileno()
+        )
+        self.serviceinit()
         self.settimeout(sock.gettimeout())
         sock.detach()
 
 class ServiceSSLSocket(ServiceSocketMixin, ssl.SSLSocket):
     def __init__(self, sock):
         assert(sock.type & socket.SOCK_STREAM)
-        super().__init__(sock=sock,
-                         family=sock.family,
-                         type=sock.type,
-                         proto=sock.proto,
-                         fileno=sock.fileno(),
-                         _context=sock.context
+        ssl.SSLSocket.__init__(
+            self,
+            sock=sock,
+            family=sock.family,
+            type=sock.type,
+            proto=sock.proto,
+            fileno=sock.fileno(),
+            _context=sock.context
         )
+        self.serviceinit()
         self.settimeout(sock.gettimeout())
         sock.detach()
-
 
 class ErrorDispatcher(threading.Thread):
     def __init__(self):
