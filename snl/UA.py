@@ -103,6 +103,7 @@ class UAbase(Transaction.TransactionManager):
         if self.contacturi:
             self.contacturi.host = self.transport.localip
             self.contacturi.port = self.transport.localport
+#            self.contacturi.params['user'] = 'phone'
 
     def __str__(self):
         return str(self.contacturi)
@@ -293,9 +294,13 @@ class AuthenticationManager:
             realm = self.identity.get('realm')
             self.saheaders.append(Header.Authorization(scheme='Digest', params=dict(username=username, uri=uri, realm=realm, nonce='', algorithm='AKAv1-MD5', response='')))
             self.sa = self.transport.prepareSA(self.proxy[0])
+#            val = []
             for alg in Security.IPSEC_ALGS:
                 for ealg in Security.IPSEC_EALGS:
                     self.saheaders.append(Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans')))
+#                    h=Header.Security_Client(mechanism='ipsec-3gpp', params=dict(**self.sa, alg=alg, ealg=ealg, prot='esp', mod='trans'))
+#                    val.append(str(h).split(':',1)[1].strip())
+#            self.saheaders.append(Header.Header(name='Security-Client', value=','.join(val)))
         message.addheaders(*self.saheaders, replace=True)
         for result,event in super().sendmessage(message):
             if result.error and event.code in (401, 407):
@@ -382,7 +387,7 @@ class SessionManager:
     def popsession(self, key):
         return self.getsession(key, pop=True)
 
-    def invite(self, touri, *headers):
+    def invite(self, touri, *headers, asynch=False):
         if isinstance(touri, UAbase):
             touri = touri.addressofrecord
         invite = Message.INVITE(touri, *headers)
@@ -392,8 +397,16 @@ class SessionManager:
             ifmissing=True
         )
         media = self.mediaclass(ua=self, **self.mediaargs)
+        invite.media = media
         invite.setbody(*media.getlocaloffer())
         log.info("%s inviting %s", self, touri)
+        if not asynch:
+            return self._invite(invite)
+        threading.Thread(target=self._invite, args=(invite,), daemon=True).start()
+        return invite
+
+    def _invite(self, invite):
+        media = invite.media
         for result,event in self.sendmessage(invite):
             if result.success:
                 log.info("%s invitation ok", self)
@@ -501,6 +514,24 @@ class SessionManager:
 
 
 class CancelationManager:
+    def cancel(self, invite):
+        log.info("%s canceling %s", self, invite.branch)
+        for result,event in self.sendmessage(invite.cancel()):
+            if result.success:
+                log.info("%s cancel ok", self)
+                return
+
+            elif result.error:
+                log.info("%s canceling failed: %s %s", self, event.code, event.reason)
+                return
+
+            elif result.provisional:
+                pass
+
+            elif result.exception:
+                log.info("%s canceling failed: %s", self, event)
+                return
+
     def CANCEL_handler(self, cancel):
         transaction = self.transactionmatching(cancel, matchonlyonbranch=True)
         if transaction:
