@@ -227,7 +227,8 @@ class Struct:
 class SAxfrm:
     AUTH_DICT = {
         'hmac-sha-1-96' : 'sha1 0x{}',
-        'hmac-md5-96'   : 'md5 0x{}'
+        'hmac-md5-96'   : 'md5 0x{}',
+#        'unknown-auth'   : 'xxx',
     }
     ENC_DICT = {
         'null'          : 'cipher_null ""',

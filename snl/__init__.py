@@ -62,7 +62,8 @@ for submodule,level in (('Header',      'WARNING'),
                         ('MSRP',        'WARNING'),
                         ('Dialog',      'INFO'),
                         ('Transport',   'INFO'),
-                        ('UA',          'INFO')):
+                        ('UA',          'INFO'),
+                        ('main',        'INFO')):
     log = logging.getLogger(submodule)
     log.propagate = False
     log.setLevel(level)
@@ -74,14 +75,13 @@ for submodule,level in (('Header',      'WARNING'),
 mainloghandler = logging.StreamHandler(sys.stdout)
 mainlogformatter = ColoredFormatter("\x1b[2;37m%(asctime)s \x1b[%(color1)sm%(indentedmessage)s\x1b[m")
 mainloghandler.setFormatter(mainlogformatter)
-log = logging.getLogger('Main')
-log.setLevel('INFO')
+log = logging.getLogger()
 log.addHandler(mainloghandler)
 log.error("{:#^66}".format("< SIPandLove >"))
 
 
 from .SIPBNF import URI
-from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS
+from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS,INFO,PRACK,UPDATE
 from .Transport import Transport
 from .UA import SIPPhoneClass
 from .Media import Media
