@@ -245,36 +245,42 @@ class Transport(multiprocessing.Process):
                         addr = (dstip, dstport)
 
         if issip and self.sendcb:
-            self.sendcb(message)
+            mess = self.sendcb(message)
+            if mess is not None:
+                message = mess
 
         log.info("%s:%d --%s-> %s:%d (fd=%d)\n%s", self.localip, srcport, protocol, dstip, dstport, fd, message)
         self.messagepipe.send((fd, addr, bytes(message)))
 
     def recv(self, timeout=None):
-        if self.messagepipe.poll(timeout):
-            try:
-                fd,protocol,(srcip,srcport),dstport,decodeinfo = self.messagepipe.recv()
-            except:
+        try:
+            if not self.messagepipe.poll(timeout):
                 return None
-            message = decodeinfo.finish()
-            if message is not None:
-                message.fd = fd
-                if isinstance(message, Message.SIPRequest):
-                    via = message.header('via')
-                    if via:
-                        if via.host != srcip:
-                            via.params['received'] = srcip
-                        if 'rport' in via.params:
-                            via.params['received'] = srcip
-                            via.params['rport'] = srcport
-                esp = ''
-                if self.SAestablished and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
-                    esp = '/ESP'
-                log.info("%s:%s <-%s%s-- %s:%d (fd=%d)\n%s", self.localip, dstport, protocol, esp, srcip, srcport, fd, message)
-                if self.recvcb:
-                    self.recvcb(message)
-                return message
-        return None
+            fd,protocol,(srcip,srcport),dstport,decodeinfo = self.messagepipe.recv()
+        except:
+            return None
+        message = decodeinfo.finish()
+        if message is None:
+            return None
+        else:
+            message.fd = fd
+            if isinstance(message, Message.SIPRequest):
+                via = message.header('via')
+                if via:
+                    if via.host != srcip:
+                        via.params['received'] = srcip
+                    if 'rport' in via.params:
+                        via.params['received'] = srcip
+                        via.params['rport'] = srcport
+            esp = ''
+            if self.SAestablished and srcip == self.remotesa['ip'] and dstport in (self.localsa['portc'],self.localsa['ports']):
+                esp = '/ESP'
+            log.info("%s:%s <-%s%s-- %s:%d (fd=%d)\n%s", self.localip, dstport, protocol, esp, srcip, srcport, fd, message)
+            if self.recvcb:
+                mess = self.recvcb(message)
+                if mess is not None:
+                    message = mess
+            return message
 
     def command(self, *args):
         self.commandpipe.send(args)
@@ -524,8 +530,9 @@ class Transport(multiprocessing.Process):
             for sock in servicesockets.copy():
                 if currenttime - sock.touchtime > 32:
                     # service TCP socket that are idle for more than 64*T1 sec are closed
+                    fd = sock.fileno()
                     sock.close()
-                    log.info("%s: service socket fd=%s closed for inactivity", self, sock.fileno())
+                    log.info("%s: service socket fd=%s closed for inactivity", self, fd)
                     servicesockets.remove(sock)
                 elif sock.fileno() == -1:
                     log.info("%s: service socket fd=%s closed after EOF", self, sock.fileno())
@@ -639,7 +646,7 @@ class ICMPProcess(multiprocessing.Process):
         self.start()
 
     def run(self):
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         try:
             rawsock = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.getprotobyname("icmp"))
         except:

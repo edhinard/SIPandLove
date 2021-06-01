@@ -33,12 +33,20 @@ class TransactionManager(threading.Thread):
                     self.allow.add(method)
         if 'INVITE' in self.allow:
             self.allow.add('ACK')
+        self.running = True
         self.start()
 
     def destroy(self):
         self.transport.stop()
         del self.transport
         # not enough to free self.transport since pending transactions and pending transaction timers have a reference on it...
+        self.running = False
+        self.join()
+        with self.lock:
+            for transaction in self.transactions:
+                transaction.terminated = True
+                self.transactions.remove(transaction)
+        Timer.reset()
 
     def transporterror(self, message, err):
         transaction = self.transactionmatching(message)
@@ -82,7 +90,7 @@ class TransactionManager(threading.Thread):
                     return transaction
 
     def run(self):
-        while True:
+        while self.running:
             message = self.transport.recv()
             if message is None: # happens when transport process is terminated
                 break
@@ -90,8 +98,11 @@ class TransactionManager(threading.Thread):
             if transaction:
                 transaction.eventmessage(message)
                 if transaction.terminated:
-                    with self.lock:
-                        self.transactions.remove(transaction)
+                    try:
+                        with self.lock:
+                            self.transactions.remove(transaction)
+                    except:
+                        pass
                 if isinstance(transaction, INVITEclientTransaction) \
                    and transaction.lastresponse \
                    and transaction.lastresponse.familycode == 2:
@@ -243,7 +254,14 @@ class Transaction:
 
     def _getterminated(self):
         return self.state == 'Terminated'
-    terminated = property(_getterminated)
+    def _setterminated(self, value):
+        if not value:
+            raise ValueError("cannot set 'terminated' to other value than True")
+        with self.lock:
+            state = self.state
+            self.state = 'Terminated'
+            self.checkstate(state)
+    terminated = property(_getterminated, _setterminated)
 
     def wait(self):
         self.eventsemaphore.acquire()
