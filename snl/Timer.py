@@ -14,6 +14,9 @@ def arm(duration, cb, *args, **kwargs):
 
 def unarm(timer):
     MANAGER.unarm(timer)
+
+def reset():
+    MANAGER.reset()
     
 class TimerManager(threading.Thread):
     def __init__(self):
@@ -37,6 +40,10 @@ class TimerManager(threading.Thread):
         with self.lock:
             self.timers.pop(timer, None)
 
+    def reset(self):
+        with self.lock:
+            self.timers = {}
+
     # Thread loop
     def run(self):
         log.debug("Starting timer thread")
@@ -58,7 +65,7 @@ class TimerManager(threading.Thread):
     # Process loop
     @staticmethod
     def processloop(pipe):
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         sortedtimers = []
         while True:
             #
