@@ -49,10 +49,13 @@ class DecodeInfo:
 class SIPMessage(object):
     @staticmethod
     def frombytes(buf):
-        decodeinfo = SIPMessage.predecode(buf)
-        if decodeinfo.status == 'OK':
-            return decodeinfo.finish()
-        return None
+        try:
+            decodeinfo = SIPMessage.predecode(buf)
+            if decodeinfo.status == 'OK':
+                return decodeinfo.finish()
+        except Exception as err:
+            log.warning(err)
+            return None
     
     @staticmethod
     def predecode(buf):
@@ -269,7 +272,8 @@ class SIPMessage(object):
     def _getcallid(self):
         c = self.header('Call-Id')
         if not c:
-            c = self.addheaders(Header.Call_ID(callid=Tags.callid()))
+            self.addheaders(Header.Call_ID(callid=Tags.callid()))
+            c = self.header('Call-Id')
         return c.callid
     def _setcallid(self, cid):
         c = self.header('Call-Id')
@@ -368,7 +372,8 @@ class SIPRequest(SIPMessage, metaclass=RequestMeta):
             Header.CSeq(seq=random.randint(0,0x7fff), method=self.METHOD),
             ifmissing=True
         )
-        self.branch = Tags.branch()
+        if not getattr(self, 'keepbranch', False):
+            self.branch = Tags.branch()
         try:
             if self.callid is None:
                 self.callid = Tags.callid()
@@ -462,6 +467,11 @@ class INVITE(SIPRequest):
         if route:
             ack.addheaders('Route: {}'.format(route.value))
         return ack
+    def cancel(self):
+        cancel = CANCEL(self.uri, *self.headers('via', 'from', 'to', 'call-id', 'cseq'))
+        cancel.header('CSeq').method = 'CANCEL'
+        cancel.keepbranch = True
+        return cancel
 
 class ACK(SIPRequest):
     pass
@@ -474,6 +484,12 @@ class BYE(SIPRequest):
 class SUBSCRIBE(SIPRequest):
     pass
 class NOTIFY(SIPRequest):
+    pass
+class INFO(SIPRequest):
+    pass
+class PRACK(SIPRequest):
+    pass
+class UPDATE(SIPRequest):
     pass
 
 if __name__ == '__main__':
