@@ -81,7 +81,7 @@ log.error("{:#^66}".format("< SIPandLove >"))
 
 
 from .SIPBNF import URI
-from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS,INFO,PRACK,UPDATE
+from .Message import SIPMessage,SIPResponse,SIPRequest,REGISTER,INVITE,ACK,BYE,CANCEL,OPTIONS,INFO,PRACK,UPDATE,NOTIFY
 from .Transport import Transport
 from .UA import SIPPhoneClass
 from .Media import Media
