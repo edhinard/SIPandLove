@@ -142,9 +142,9 @@ class UAbase(Transaction.TransactionManager):
     def send(self, message):
             self.transport.send(message, self.proxy)
 
-    def options(self, *headers):
+    def options(self, *headers, body=None):
         log.info("%s querying for capabilities", self)
-        options = Message.OPTIONS(self.domain, *headers)
+        options = Message.OPTIONS(self.domain, *headers, body=body)
         options.addheaders(
             Header.From(self.addressofrecord),
             Header.To(self.addressofrecord),
