@@ -514,7 +514,7 @@ class Transport(multiprocessing.Process):
                         # Flush buffer if filled with CRLF
                         if decodeinfo.status == 'EMPTY':
                             if buf:
-                                log.info("%s:%s <-%s-- %s:%d (fd=%d)\n%s", obj.localip, protocol, obj.getsockname()[1], *remoteaddr, obj.fileno(), bytes(buf))
+                                log.info("%s:%s <-%s-- %s:%d (fd=%d)\n%s", self.localip, obj.getsockname()[1], protocol, *remoteaddr, obj.fileno(), bytes(buf))
                                 del buf[:]
                             break
 
