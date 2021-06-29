@@ -682,7 +682,7 @@ addr_spec = SIP_SIPS_URI | absoluteURI
 tokenLWS = pp.Word(pp.alphanums + '-.!%*_+`\'~ \t')
 display_name = pp.Combine(tokenLWS) | quoted_string.setParseAction(lambda s,loc,toks:[unquote(toks[0])])
 name_addr = pp.Optional(display_name, None)('display') + pp.Suppress(LAQUOT)('aquot').setParseAction(lambda s,loc,toks:[True]) + addr_spec + pp.Suppress(RAQUOT)
-c_p_q = pp.CaselessLiteral('q') + pp.Suppress(EQUAL) + qvalue.setParseAction(lambda s,loc,toks:[int(toks[0])])
+c_p_q = pp.CaselessLiteral('q') + pp.Suppress(EQUAL) + qvalue.setParseAction(lambda s,loc,toks:[float(toks[0])])
 delta_seconds =  pp.Word(pp.nums, min=1).setParseAction(lambda s,loc,toks:[int(toks[0])])
 c_p_expires = pp.CaselessLiteral('expires') + pp.Suppress(EQUAL) + delta_seconds
 contact_params = c_p_q | c_p_expires  | generic_param
