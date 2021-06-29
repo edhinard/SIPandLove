@@ -7,6 +7,8 @@ import fcntl
 import struct
 import array
 import sys
+import signal
+import time
 
 ESCAPE_RE=re.compile('\\\\[\r\n]')
 def unquote(string):
@@ -222,3 +224,54 @@ def getinterfaces():
 
     s.close()
     return interfaces, loopbackinterfaces
+
+class TimedLoop:
+    def __init__(self, *, rate=None, period=None, count=None, pause=0):
+        if rate is not None and period is not None:
+            raise ValueError("'rate' and 'period' parameters are exclusive. cannot set both")
+        if rate is not None:
+            if rate <=0:
+                raise ValueError("'rate' must be a positive number or None")
+            self.period = 1/rate
+        elif period is not None:
+            if period <=0:
+                raise ValueError("'period' must be a positive number or None")
+            self.period = period
+        else:
+            self.period = 1
+        self.pause = float(pause)
+        self.maxcount = count
+        self.initialtime = None
+        self.running = True
+        self.count = 0
+        signal.signal(signal.SIGINT, self.stop)
+
+    def __bool__(self):
+        if not self.running:
+            return False
+
+        if self.initialtime is None:
+            self.initialtime = time.monotonic()
+            if self.maxcount == 0:
+                return False
+            else:
+                return True
+
+        self.count += 1
+        if self.maxcount is not None and self.count >= self.maxcount:
+            self.running = False
+
+        else:
+            sleep = ((self.initialtime + self.count*self.period) - time.monotonic())
+            if sleep > 0:
+                if signal.sigtimedwait([signal.SIGINT], sleep):
+                    self.running = False
+
+        if not self.running:
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
+            signal.sigtimedwait([signal.SIGINT], self.pause)
+            return False
+        return True
+
+    def stop(self, *args):
+        self.running = False
