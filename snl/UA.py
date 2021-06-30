@@ -29,8 +29,6 @@ except Exception as e:
 
 class UAbase(Transaction.TransactionManager):
     def __init__(self, ua={}, identity={}, transport={}, transaction={}):
-        if 'sec-agree' in self.extensions:
-            transport['protocol'] = 'udp'
         super().__init__(transport, **transaction)
 
         ua = dict(ua)

@@ -251,19 +251,19 @@ class SAxfrm:
         self.local.ports, self.local.tcps, self.local.udps = self.reserveoneport()
 
         self.xfrm('''policy add
-                         src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto udp
-                         dir out
-                         tmpl src 0.0.0.0 dst 0.0.0.0/0 proto esp mode transport''')
-        self.xfrm('''policy add
-                         src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto udp
+                         src {local.ip} dst 0.0.0.0/0 sport {local.portc}
                          dir out
                          tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         self.xfrm('''policy add
-                         src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto udp
+                         src {local.ip} dst 0.0.0.0/0 sport {local.ports}
+                         dir out
+                         tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
+        self.xfrm('''policy add
+                         src 0.0.0.0/0 dst {local.ip} dport {local.portc}
                          dir in
                          tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         self.xfrm('''policy add
-                         src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto udp
+                         src 0.0.0.0/0 dst {local.ip} dport {local.ports}
                          dir in
                          tmpl src 0.0.0.0 dst 0.0.0.0 proto esp mode transport''')
         
@@ -287,7 +287,7 @@ class SAxfrm:
                          proto esp spi {remote.spis} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {local.ip} dst {remote.ip} sport {local.portc} dport {remote.ports} proto udp''')
+                         sel src {local.ip} dst {remote.ip} sport {local.portc} dport {remote.ports}''')
         
         # SA #2 from remote ports to local portc with local spic
         self.xfrm('''state update
@@ -295,7 +295,7 @@ class SAxfrm:
                          proto esp spi {local.spic} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {remote.ip} dst {local.ip} sport {remote.ports} dport {local.portc} proto udp''')
+                         sel src {remote.ip} dst {local.ip} sport {remote.ports} dport {local.portc}''')
         
         # SA #3 from local ports to remote portc with remote spic
         self.xfrm('''state add
@@ -303,7 +303,7 @@ class SAxfrm:
                          proto esp spi {remote.spic} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {local.ip} dst {remote.ip} sport {local.ports} dport {remote.portc} proto udp''')
+                         sel src {local.ip} dst {remote.ip} sport {local.ports} dport {remote.portc}''')
 
         # SA #4 from remote portc to local ports with local spis
         self.xfrm('''state update
@@ -311,7 +311,7 @@ class SAxfrm:
                          proto esp spi {local.spis} mode transport
                          replay-window 32
                          auth {auth} enc {enc}
-                         sel src {remote.ip} dst {local.ip} sport {remote.portc} dport {local.ports} proto udp''')
+                         sel src {remote.ip} dst {local.ip} sport {remote.portc} dport {local.ports}''')
 
         self.state = 'created'
 
@@ -320,10 +320,10 @@ class SAxfrm:
             return
 
         # flush SPDB
-        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.portc} proto udp dir out''', False)
-        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} proto udp dir out''', False)
-        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} proto udp dir in''', False)
-        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} proto udp dir in''', False)
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.portc} dir out''', False)
+        self.xfrm('''policy del src {local.ip} dst 0.0.0.0/0 sport {local.ports} dir out''', False)
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.portc} dir in''', False)
+        self.xfrm('''policy del src 0.0.0.0/0 dst {local.ip} dport {local.ports} dir in''', False)
 
         if self.state == 'initialized':
             # free pre-allocated SPI

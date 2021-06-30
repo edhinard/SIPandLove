@@ -350,6 +350,7 @@ class Transport(multiprocessing.Process):
                 # Command comming from main process
                 if obj == self.childcommandpipe:
                     command = self.childcommandpipe.recv()
+                    log.debug("command comming from main process: %r", command)
                     if command[0] == 'stop':
                         if tcplisteningsocket:
                             tcplisteningsocket.close()
@@ -445,12 +446,15 @@ class Transport(multiprocessing.Process):
                                               spis=sa.local.spis,  spic=sa.local.spic,
                                               ports=sa.local.ports,  portc=sa.local.portc,
                                               udpc=sa.local.udpc.fileno(), udps=sa.local.udps.fileno(),
-                                              tcpc=-1, tcps=-1
+                                              tcpc=sa.local.tcpc.fileno(), tcps=sa.local.tcps.fileno()
                                 )
                                 self.childcommandpipe.send(local)
                             elif command[1] == 'establish':
                                 sa.finalize(**command[2])
                                 remote = dict(ip=sa.remote.ip, spis=sa.remote.spis, spic=sa.remote.spic, ports=sa.remote.ports, portc=sa.remote.portc)
+                                tcpc = ServiceSocket(sa.local.tcpc)
+                                tcpc.connect((sa.remote.ip,sa.remote.ports))
+                                servicesockets.append(tcpc)
                                 self.childcommandpipe.send(remote)
                             elif command[1] == 'terminate':
                                 sa.terminate()
@@ -464,6 +468,7 @@ class Transport(multiprocessing.Process):
                 # Message comming from main process --> send to remote address
                 elif obj == self.childmessagepipe:
                     fd,remoteaddr,packet = self.childmessagepipe.recv()
+                    log.debug("message comming from main process, fd:%s remote:%r \"%s...\"", fd, remoteaddr, repr(packet[:10])[2:-1])
                     send = None
                     for sock in udpsockets:
                         if sock.fileno()==fd:
@@ -484,6 +489,7 @@ class Transport(multiprocessing.Process):
 
                 # Incomming TCP connection --> new socket (will be read in the next result of poll)
                 elif obj == tcplisteningsocket:
+                    log.debug("incomming TCP connection")
                     sock = ServiceSocket(obj.accept()[0])
                     servicesockets.append(sock)
                     log.info("%s: new service socket fd=%s", self, sock.fileno())
@@ -491,6 +497,7 @@ class Transport(multiprocessing.Process):
                 # Incomming packet --> decode and send to main process
                 elif obj in udpsockets:
                     buf,remoteaddr = obj.recvfrom(65536)
+                    log.debug("incomming UDP packet: %s %s", remoteaddr, buf[:10])
                     decodeinfo = Message.SIPMessage.predecode(buf)
                     # Discard inconsistent messages
                     if decodeinfo.status != 'OK':
@@ -503,6 +510,7 @@ class Transport(multiprocessing.Process):
                     protocol = 'TCP'
                     if isinstance(obj, ssl.SSLSocket):
                         protocol = 'TLS'
+                    log.debug("incomming %s packet", protocol)
                     while True:
                         decodeinfo = Message.SIPMessage.predecode(buf)
 
