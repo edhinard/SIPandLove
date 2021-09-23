@@ -9,7 +9,7 @@ with open(path.join(here, 'README.rst'), encoding='utf-8') as f:
 
 setup(
     name='snl',
-    version='1.0',
+    version='1.1',
     description='a SIP library',
     long_description=long_description,
     url='https://github.com/edhinard/SIPandLove',
