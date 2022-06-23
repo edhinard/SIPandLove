@@ -18,8 +18,6 @@ from . import Media
 from . import Timer
 from . import Dialog
 from . import Security
-from . import Transport
-from . import Utils
 
 try:
     import card.USIM as USIM
@@ -241,7 +239,7 @@ class RegistrationManager:
                 if expiresheader:
                     gotexpires = expiresheader.delta
                 contactheader = event.header('Contact')
-                if contactheader:
+                if contactheader and contactheader.params.get('expires'):
                     gotexpires = contactheader.params.get('expires')
                 if gotexpires > 0:
                     self.registered = True
