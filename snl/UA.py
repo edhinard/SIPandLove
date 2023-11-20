@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import random
+import itertools
 import logging
 import time
 import threading
@@ -28,6 +29,7 @@ except Exception as e:
     USIM = None
 
 class UAbase(Transaction.TransactionManager):
+    extensions = []
     def __init__(self, ua={}, identity={}, transport={}, transaction={}):
         super().__init__(transport, **transaction)
 
@@ -598,21 +600,35 @@ class NotificationManager:
         return notify.response(200)
 
 classcache = {}
-def SIPPhoneClass(*extensions):
-    for extension in set(extensions):
+def SIPPhoneClass(*options):
+    bdict = {'Notification': NotificationManager,
+             'Cancelation': CancelationManager,
+             'Session': SessionManager,
+             'Authentication': AuthenticationManager,
+             'Registration': RegistrationManager,
+             'Base': UAbase
+    }
+    if options[0] in bdict:
+        base = options[0]
+        bases = tuple([bdict[b] for b in itertools.dropwhile(lambda b: b!=base, bdict)])
+        ext = options[1:]
+    else:
+        bases = tuple(bdict.values())
+        ext = options
+
+    for extension in ext:
         if extension == 'sec-agree':
             Security.initsecagree()
         elif extension == 'reg-event':
             pass
         else:
             log.logandraise(Exception('unknown extension {}'.format(extension)))
-    ext = frozenset(extensions)
 
-    if ext not in classcache:
-        class SIPPhone(NotificationManager, CancelationManager, SessionManager, AuthenticationManager, RegistrationManager, UAbase):
+    if (bases, ext) not in classcache:
+        class SIPPhone(*bases):
             extensions = ext
-        classcache[ext] = SIPPhone
-    return classcache[ext]
+        classcache[(bases, ext)] = SIPPhone
+    return classcache[(bases, ext)]
 
 if __name__ == '__main__':
     import snl
