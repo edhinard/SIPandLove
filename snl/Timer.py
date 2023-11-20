@@ -12,18 +12,21 @@ log = logging.getLogger('Timer')
 def arm(duration, cb, *args, **kwargs):
     return MANAGER.arm(duration, cb, *args, **kwargs)
 
+
 def unarm(timer):
     MANAGER.unarm(timer)
 
+
 def reset():
     MANAGER.reset()
-    
+
+
 class TimerManager(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self, daemon=True)
         self.lock = threading.Lock()
         self.timers = {}
-        self.pipe,childpipe = multiprocessing.Pipe()
+        self.pipe, childpipe = multiprocessing.Pipe()
         self.process = multiprocessing.Process(target=TimerManager.processloop, args=(childpipe,), daemon=True)
         self.process.start()
         self.start()
@@ -53,7 +56,7 @@ class TimerManager(threading.Thread):
             except EOFError:
                 break
             with self.lock:
-                cb,args,kwargs = self.timers.pop(idt, (None, None, None))
+                cb, args, kwargs = self.timers.pop(idt, (None, None, None))
             if cb:
                 try:
                     log.info("calling %s(*%s, **%s)", cb, args, kwargs)
@@ -73,7 +76,7 @@ class TimerManager(threading.Thread):
             #
             currenttime = time.monotonic()
             while sortedtimers and currenttime >= sortedtimers[0][0]:
-                targettime,idt = sortedtimers.pop(0)
+                targettime, idt = sortedtimers.pop(0)
                 pipe.send(idt)
 
             #
@@ -91,11 +94,11 @@ class TimerManager(threading.Thread):
             #   convert duration to absolute time and place it in the sorted list of timers
             #
             if pipe.poll(sleep):
-                duration,idt = pipe.recv()
+                duration, idt = pipe.recv()
                 currenttime = time.monotonic()
                 targettime = currenttime + duration
                 sortedtimers.append((targettime, idt))
                 sortedtimers.sort()
-            
-        
+
+
 MANAGER = TimerManager()

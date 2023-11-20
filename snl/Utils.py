@@ -1,4 +1,4 @@
-#coding: utf-8
+# coding: utf-8
 
 import re
 import collections
@@ -10,7 +10,9 @@ import sys
 import signal
 import time
 
-ESCAPE_RE=re.compile('\\\\[\r\n]')
+ESCAPE_RE = re.compile('\\\\[\r\n]')
+
+
 def unquote(string):
     if not (string.startswith('"') and string.endswith('"')):
         return string
@@ -18,8 +20,12 @@ def unquote(string):
     if string and (string[-1] == '\\' or ESCAPE_RE.match(string)):
         raise Exception("Unexpected backslash in quoted-string")
     return string
-NONTOKENCHARS_RE=re.compile('[] \t"#$&(),/:;<=>?@[\\\\^{|}]')
-def quote(string,forcequote=False):
+
+
+NONTOKENCHARS_RE = re.compile('[] \t"#$&(),/:;<=>?@[\\\\^{|}]')
+
+
+def quote(string, forcequote=False):
     if string is None:
         return None
     string = str(string)
@@ -30,7 +36,7 @@ def quote(string,forcequote=False):
     if quotealreadythere or \
        forcequote or \
        NONTOKENCHARS_RE.search(string) or \
-       string!=string.encode('ascii','ignore').decode('ascii'):
+       string != string.encode('ascii', 'ignore').decode('ascii'):
         return '"{}"'.format(string.replace('\\', '\\\\').replace('"', '\\"'))
     return string
 
@@ -40,7 +46,7 @@ class ParameterDict:
 
     from http://code.activestate.com/recipes/66315-case-insensitive-dictionary/
     + change dict to OrderedDict
-    
+
     Keys are retained in their original form
     when queried with .keys() or .items().
 
@@ -48,19 +54,19 @@ class ParameterDict:
     keys to (key,value) pairs. All key lookups are done
     against the lowercase keys, but all methods that expose
     keys to the user retrieve the original keys."""
-    
+
     def __init__(self, dictorlist=None):
         """Create an empty dictionary, or update from 'dict'."""
         self._dict = collections.OrderedDict()
         if isinstance(dictorlist, dict):
             self.update(dictorlist)
         elif dictorlist is not None:
-            for k,v in dictorlist:
+            for k, v in dictorlist:
                 self[k] = v
 
     def __bool__(self):
         return bool(self._dict)
-            
+
     def __getitem__(self, key):
         """Retrieve the value associated with 'key' (in any case)."""
         k = key.lower()
@@ -75,7 +81,7 @@ class ParameterDict:
     def has_key(self, key):
         """Case insensitive test wether 'key' exists."""
         k = key.lower()
-        return self._dict.has_key(k)
+        return k in self
 
     def keys(self):
         """List of keys in their original case."""
@@ -109,18 +115,18 @@ class ParameterDict:
     def setdefault(self, key, default):
         """If 'key' doesn't exists, associate it with the 'default' value.
         Return value associated with 'key'."""
-        if not self.has_key(key):
+        if key not in self:
             self[key] = default
         return self[key]
 
     def update(self, dict):
         """Copy (key,value) pairs from 'dict'."""
-        for k,v in dict.items():
+        for k, v in dict.items():
             self[k] = v
 
     def __repr__(self):
         """String representation of the dictionary."""
-        items = ", ".join([("%r: %r" % (k,v)) for k,v in self.items()])
+        items = ", ".join([("%r: %r" % (k, v)) for k, v in self.items()])
         return "{%s}" % items
 
     def __str__(self):
@@ -151,7 +157,7 @@ def getinterfaces():
     sizeofifreq = 1
     while True:
         ifreqs = array.array('B', b'\x00'*sizeofifreq)
-        ifc_buf,ifc_len = ifreqs.buffer_info()
+        ifc_buf, ifc_len = ifreqs.buffer_info()
         ifconf = bytearray(struct.pack('iL', ifc_len, ifc_buf))
         fcntl.ioctl(s.fileno(), SIOCGIFCONF, ifconf)
         ifc_len = struct.unpack_from('i', ifconf)[0]
@@ -181,15 +187,15 @@ def getinterfaces():
     # big enough to contains all ifreqs (there are ipnum)
     # ifr_name and ifr_addr (IPv4) fields are filled
     ifreqs = array.array('B', b'\x00'*sizeofifreq*ipnum)
-    ifc_buf,ifc_len = ifreqs.buffer_info()
+    ifc_buf, ifc_len = ifreqs.buffer_info()
     ifconf = bytearray(struct.pack('iL', ifc_len, ifc_buf))
     fcntl.ioctl(s.fileno(), SIOCGIFCONF, ifconf)
     ifc_len = struct.unpack_from('i', ifconf)[0]
     ifreqs = bytes(ifreqs)
     interfaces = {}
-    for offset in range(0,ipnum*sizeofifreq,sizeofifreq):
+    for offset in range(0, ipnum*sizeofifreq, sizeofifreq):
         ifr_name = ifreqs[offset:offset+IFNAMSIZ].rstrip(b'\x00').decode('ascii')
-        sa_family = ifreqs[offset+IFNAMSIZ:offset+IFNAMSIZ+4]
+        # sa_family = ifreqs[offset+IFNAMSIZ:offset+IFNAMSIZ+4]
         ifr_addr = socket.inet_ntoa(ifreqs[offset+IFNAMSIZ+4:offset+IFNAMSIZ+8])
         interfaces.setdefault(ifr_name, []).append(ifr_addr)
 
@@ -206,17 +212,17 @@ def getinterfaces():
     #       }
     #
     SIOCGIFFLAGS = 0x8913
-    IFF_UP = 0x1
+    # IFF_UP = 0x1
     IFF_LOOPBACK = 0x8
-    IFF_RUNNING	= 0x40
+    IFF_RUNNING = 0x40
     loopbackinterfaces = {}
     for name in list(interfaces.keys()):
         ifreq = bytearray(name.encode('ascii') + b'\x00'*IFNAMSIZ*2)
         fcntl.ioctl(s.fileno(), SIOCGIFFLAGS, ifreq)
-        flags = int.from_bytes(ifreq[IFNAMSIZ:IFNAMSIZ+2], byteorder=sys.byteorder)
-        up = bool(flags&IFF_UP)
-        loopback = bool(flags&IFF_LOOPBACK)
-        running = bool(flags&IFF_RUNNING)
+        flags = int.from_bytes(ifreq[IFNAMSIZ:IFNAMSIZ + 2], byteorder=sys.byteorder)
+        # up = bool(flags & IFF_UP)
+        loopback = bool(flags & IFF_LOOPBACK)
+        running = bool(flags & IFF_RUNNING)
         if not running:
             interfaces.pop(name)
         if loopback:
@@ -225,16 +231,17 @@ def getinterfaces():
     s.close()
     return interfaces, loopbackinterfaces
 
+
 class TimedLoop:
     def __init__(self, *, rate=None, period=None, count=None, pause=0):
         if rate is not None and period is not None:
             raise ValueError("'rate' and 'period' parameters are exclusive. cannot set both")
         if rate is not None:
-            if rate <=0:
+            if rate <= 0:
                 raise ValueError("'rate' must be a positive number or None")
             self.period = 1/rate
         elif period is not None:
-            if period <=0:
+            if period <= 0:
                 raise ValueError("'period' must be a positive number or None")
             self.period = period
         else:

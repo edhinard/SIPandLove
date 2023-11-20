@@ -1,43 +1,41 @@
 #! /usr/bin/python3
 # coding: utf-8
 
-import sys
+from . import Pcap
+
+import datetime
+import errno
 import threading
+import logging
 import multiprocessing
 import multiprocessing.connection
 import random
+import signal
 import socket
 import struct
-import datetime
-import ast
 import time
-import logging
-import errno
-import collections
-import signal
 log = logging.getLogger('Media')
 
-from . import Pcap
 
 class Media(threading.Thread):
     defaultcodecs = {
-        0: 'PCMU/8000',
-        3: 'GSM/8000',
-        4: 'G723/8000',
-        5: 'DVI4/8000',
-        6: 'DVI4/16000',
-        7: 'LPC/8000',
-        8: 'PCMA/8000',
-        9: 'G722/8000',
-        10:'L16/44100/2',
-        11:'L16/44100/1',
-        12:'QCELP/8000',
-        13:'CN/8000',
-        14:'MPA/90000',
-        15:'G728/8000',
-        16:'DVI4/11025',
-        17:'DVI4/22050',
-        18:'G729/8000'}
+        0:  'PCMU/8000',
+        3:  'GSM/8000',
+        4:  'G723/8000',
+        5:  'DVI4/8000',
+        6:  'DVI4/16000',
+        7:  'LPC/8000',
+        8:  'PCMA/8000',
+        9:  'G722/8000',
+        10: 'L16/44100/2',
+        11: 'L16/44100/1',
+        12: 'QCELP/8000',
+        13: 'CN/8000',
+        14: 'MPA/90000',
+        15: 'G728/8000',
+        16: 'DVI4/11025',
+        17: 'DVI4/22050',
+        18: 'G729/8000'}
 
     def __init__(self, *, ua, ip=None, port=None, pcap=None, codecs=None, filter=None, loop=False):
         self.ua = ua
@@ -64,7 +62,7 @@ class Media(threading.Thread):
                     self.codecs.append(tuple(codec[:3]))
         self.lock = multiprocessing.Lock()
         self.lock.acquire()
-        self.pipe,childpipe = multiprocessing.Pipe()
+        self.pipe, childpipe = multiprocessing.Pipe()
         self.process = MediaProcess(pipe=childpipe, lock=self.lock)
         self.process.start()
 
@@ -74,16 +72,17 @@ class Media(threading.Thread):
     def getlocaloffer(self):
         if self.localport is None:
             self.opensocket(self.localip, self.wantedlocalport)
-        sdplines = ['v=0',
-                    'o=- {0} {0} IN IP4 0.0.0.0'.format(random.randint(0,0xffffffff)),
-                    's=-',
-                    'c=IN IP4 {}'.format(self.localip),
-                    't=0 0',
-                    'm=audio {} RTP/AVP {}'.format(self.localport, ' '.join([str(t) for t,n,f in self.codecs])),
-                    'a=sendrecv'
+        sdplines = [
+            'v=0',
+            'o=- {0} {0} IN IP4 0.0.0.0'.format(random.randint(0, 0xffffffff)),
+            's=-',
+            'c=IN IP4 {}'.format(self.localip),
+            't=0 0',
+            'm=audio {} RTP/AVP {}'.format(self.localport, ' '.join([str(t) for t, n, f in self.codecs])),
+            'a=sendrecv'
         ]
-        sdplines.extend(['a=rtpmap:{} {}'.format(t, n) for t,n,f in self.codecs if n])
-        sdplines.extend(['a=fmtp:{} {}'.format(t, f) for t,n,f in self.codecs if f])
+        sdplines.extend(['a=rtpmap:{} {}'.format(t, n) for t, n, f in self.codecs if n])
+        sdplines.extend(['a=fmtp:{} {}'.format(t, f) for t, n, f in self.codecs if f])
         sdplines.append('')
         return ('\r\n'.join(sdplines), 'application/sdp')
 
@@ -108,7 +107,8 @@ class Media(threading.Thread):
         return True
 
     def starttransmit(self):
-        self.pipe.send(('starttransmit',((self.remoteip, self.remoteport), (self.pcapfilename, self.pcapfilter), self.loop)))
+        self.pipe.send(('starttransmit', ((self.remoteip, self.remoteport),
+                                          (self.pcapfilename, self.pcapfilter), self.loop)))
         ackorexc = self.pipe.recv()
         if isinstance(ackorexc, Exception):
             log.error("%s %s", self.process, ackorexc)
@@ -124,6 +124,7 @@ class Media(threading.Thread):
         self.lock.acquire()
         if not self.stopped:
             self.ua.bye(self)
+
 
 class MediaProcess(multiprocessing.Process):
     def __init__(self, pipe, lock):
@@ -149,7 +150,7 @@ class MediaProcess(multiprocessing.Process):
             #   -not transmitting -> infinite = wakeup only on incomming data from pipe or socket
             #   -transmitting and wakeup time in the past -> 0 = no sleep = immediate processing
             #   -transmitting and wakeup time in the future -> wakeup time - current time
-            currenttime = time.monotonic()
+            wakeuptime = currenttime = time.monotonic()
             if not transmitting:
                 sleep = None
             else:
@@ -168,10 +169,10 @@ class MediaProcess(multiprocessing.Process):
                 if obj == sock:
                     # incoming data from socket
                     #  discard data (and log)
-                    buf,addr = sock.recvfrom(65536)
+                    buf, addr = sock.recvfrom(65536)
                     rtp = RTP.frombytes(buf)
                     log.info("%s %s:%-5d <--- %s:%-5d RTP(%s)", self, *sock.getsockname(), *addr, rtp)
-                        
+
                 elif obj == self.pipe:
                     # incomming data from pipe = command from main program. possible commands:
                     #  -opensocket + localaddr:
@@ -184,7 +185,7 @@ class MediaProcess(multiprocessing.Process):
                     #     stop transmitting and delete current socket if any
                     #     stop process
                     #     return ack
-                    command,param = self.pipe.recv()
+                    command, param = self.pipe.recv()
                     if command == 'opensocket':
                         localaddr = param
                         try:
@@ -198,7 +199,8 @@ class MediaProcess(multiprocessing.Process):
                             except OSError as err:
                                 sock.close()
                                 sock = None
-                                exc = Exception("cannot bind UDP socket to {}. errno={}".format(localaddr, errno.errorcode[err.errno]))
+                                exc = Exception("cannot bind UDP socket to {}. errno={}".format(
+                                    localaddr, errno.errorcode[err.errno]))
                                 self.pipe.send(exc)
                             except Exception as exc:
                                 sock.close()
@@ -209,7 +211,7 @@ class MediaProcess(multiprocessing.Process):
                                 log.info("%s start listenning on %s:%d", self, *sock.getsockname())
 
                     elif command == 'starttransmit':
-                        remoteaddr,pcap,loop = param
+                        remoteaddr, pcap, loop = param
                         try:
                             rtpstream = RTPStream(*pcap)
                         except Exception as exc:
@@ -231,10 +233,11 @@ class MediaProcess(multiprocessing.Process):
             if obj is None:
                 # multiprocessing.connection.wait timeout
                 # time to send next RTP packet if there is one
-                wakeuptime,rtp = rtpstream.nextpacket()
+                wakeuptime, rtp = rtpstream.nextpacket()
                 if rtp:
                     sock.sendto(rtp, remoteaddr)
-                    log.info("%s %s:%-5d ---> %s:%-5d RTP(%s)", self, *sock.getsockname(), *remoteaddr, RTP.frombytes(rtp))
+                    log.info("%s %s:%-5d ---> %s:%-5d RTP(%s)", self, *sock.getsockname(),
+                             *remoteaddr, RTP.frombytes(rtp))
                 if wakeuptime is None:
                     if loop:
                         if not isinstance(loop, bool):
@@ -264,17 +267,18 @@ class RTP:
         self.seq = seq
         self.TS = TS
         self.SSRC = SSRC
-        self.version,self.P,self.X,self.CC,self.M = version,P,X,CC,M
+        self.version, self.P, self.X, self.CC, self.M = version, P, X, CC, M
 
     def __str__(self):
-        return "PT={} SSRC=0x{:x} Seq={} Time={} + {}bytes".format(self.PT, self.SSRC, self.seq, self.TS, len(self.payload))
+        return "PT={} SSRC=0x{:x} Seq={} Time={} + {}bytes".format(
+            self.PT, self.SSRC, self.seq, self.TS, len(self.payload))
 
     @staticmethod
     def frombytes(buf):
-        h0,h1,seq,TS,SSRC = struct.unpack_from('!bbHLL', buf[:12] + 12*b'\x00')
-        version = h0>>6
-        P = (h0>>5) & 0b1
-        X = (h0>>4) & 0b1
+        h0, h1, seq, TS, SSRC = struct.unpack_from('!bbHLL', buf[:12] + 12 * b'\x00')
+        version = h0 >> 6
+        P = (h0 >> 5) & 0b1
+        X = (h0 >> 4) & 0b1
         CC = h0 & 0b1111
         M = h1 >> 7
         PT = h1 & 0b01111111
@@ -284,8 +288,8 @@ class RTP:
 
     def tobytes(self):
         hdr = bytearray(12)
-        hdr[0] = self.version<<6 | self.P<<5 | self.X<<4 | self.CC
-        hdr[1] = self.M<<7 | self.PT
+        hdr[0] = self.version << 6 | self.P << 5 | self.X << 4 | self.CC
+        hdr[1] = self.M << 7 | self.PT
         struct.pack_into('!HLL', hdr, 2, self.seq, self.TS, self.SSRC)
         return hdr + self.payload
 
@@ -302,7 +306,7 @@ class RTPStream:
         self.eof = False
         self.generator = self._generator()
         try:
-            dummy,self.nextrtp = next(self.generator)
+            dummy, self.nextrtp = next(self.generator)
         except StopIteration:
             self.nextrtp = None
             self.eof = True
@@ -310,11 +314,11 @@ class RTPStream:
     def nextpacket(self):
         rtp = self.nextrtp
         try:
-            wakeuptime,self.nextrtp = next(self.generator)
+            wakeuptime, self.nextrtp = next(self.generator)
         except StopIteration:
             self.eof = True
-            return None,rtp
-        return wakeuptime,rtp
+            return None, rtp
+        return wakeuptime, rtp
 
     def _generator(self):
         inittimestamp = None
@@ -322,17 +326,20 @@ class RTPStream:
             if not packet.udp:
                 continue
             rtp = packet.data
-            PT,SSRC = struct.unpack_from('!xB6xI', rtp);PT&=0x7f
+            PT, SSRC = struct.unpack_from('!xB6xI', rtp)
+            PT &= 0x7f
             params = dict(srcport=packet.udp.srcport, dstport=packet.udp.dstport, PT=PT, SSRC=SSRC)
-            for k,v in self.pcapfilter.items():
+            for k, v in self.pcapfilter.items():
                 if params[k] != v:
                     break
             else:
                 if inittimestamp is None:
                     inittimestamp = packet.metadata['timestamp']
                     timestamp = datetime.timedelta()
-                if packet.metadata['timestamp'] - inittimestamp < timestamp or packet.metadata['timestamp'] - inittimestamp > timestamp + datetime.timedelta(seconds=5):
+                if packet.metadata['timestamp'] - inittimestamp < timestamp or \
+                   packet.metadata['timestamp'] - inittimestamp > \
+                   timestamp + datetime.timedelta(seconds=5):
                     inittimestamp = packet.metadata['timestamp'] - timestamp - datetime.timedelta(seconds=0.2)
                 timestamp = packet.metadata['timestamp'] - inittimestamp
-                yield timestamp.total_seconds(),rtp
-        self.eof=True
+                yield timestamp.total_seconds(), rtp
+        self.eof = True

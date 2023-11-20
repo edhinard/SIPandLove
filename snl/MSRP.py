@@ -1,10 +1,7 @@
 #! /usr/bin/env python3
 # coding:utf-8
 
-import sys
-import threading
 import multiprocessing
-import time
 import signal
 import random
 import string
@@ -12,8 +9,10 @@ import errno
 import logging
 import socket
 import re
+import textwrap
 
 log = logging.getLogger('MSRP')
+
 
 class MSRP:
     def __init__(self, *, ua, ip=None, port=None, connect=True):
@@ -26,7 +25,7 @@ class MSRP:
         self.originaloffer = None
         self.session = 'SNL_' + ''.join((random.choice(string.ascii_letters + string.digits) for _ in range(14)))
 
-        self.pipe,childpipe = multiprocessing.Pipe()
+        self.pipe, childpipe = multiprocessing.Pipe()
         self.process = MSRPProcess(pipe=childpipe)
         self.process.start()
 
@@ -38,33 +37,33 @@ class MSRP:
             self.originaloffer = True
             if self.doconnect:
                 self.opensocket()
-        elif self.originaloffer == False:
+        elif self.originaloffer is False:
             if self.doconnect:
                 self.opensocket(listening=True)
         sdplines = ['v=0',
-                    'o=- {0} {0} IN IP4 0.0.0.0'.format(random.randint(0,0xffffffff)),
+                    'o=- {0} {0} IN IP4 0.0.0.0'.format(random.randint(0, 0xffffffff)),
                     's=-',
                     'c=IN IP4 {}'.format(self.localip),
                     't=0 0',
                     'm=message {} TCP/MSRP *'.format(self.localport),
                     'a=accept-types:text/plain',
                     'a=path:msrp://{}:{}/{};tcp'.format(self.localip, self.localport, self.session),
-                    ''
-        ]
+                    '']
         log.info("{0} local path msrp://{0.localip}:{0.localport}/{0.session}".format(self))
         return ('\r\n'.join(sdplines), 'application/sdp')
 
     MSRP_RE = re.compile(r'a=path:msrp://(?P<ip>[^:]+):(?P<port>\d+)/(?P<session>[^;]+)')
+
     def setremoteoffer(self, sdp):
         for line in sdp.splitlines():
-#            if line.startswith(b'c='):
-#                self.remoteip = line.split()[2].decode('ascii')
-#            if line.startswith(b'm='):
-#                self.remoteport = int(line.split()[1])
-#        log.info("{0} remote path {0.remoteip}:{0.remoteport}".format(self))
+            # if line.startswith(b'c='):
+            #   self.remoteip = line.split()[2].decode('ascii')
+            # if line.startswith(b'm='):
+            #   self.remoteport = int(line.split()[1])
+            # log.info("{0} remote path {0.remoteip}:{0.remoteport}".format(self))
             try:
                 line = line.decode('ascii')
-            except:
+            except Exception:
                 continue
             m = self.MSRP_RE.match(line)
             if m:
@@ -74,26 +73,28 @@ class MSRP:
                 log.info("{0} remote path msrp://{0.remoteip}:{0.remoteport}/{0.remotesession}".format(self))
         if self.originaloffer is None:
             self.originaloffer = False
-        elif self.originaloffer == True:
+        elif self.originaloffer is True:
             if self.doconnect:
                 self.connect()
-                self.send(
-b'''MSRP dkei38sd SEND\r
-Message-ID: 4564dpWd\r
-Byte-Range: 1-*/8\r
-Content-Type: text/plain\r
-\r
-abcd\r
--------dkei38sd+\r
-\r
-MSRP dkei38ia SEND\r
-Message-ID: 4564dpWd\r
-Byte-Range: 5-8/8\r
-Content-Type: text/plain\r
-\r
-EFGH\r
--------dkei38ia$\r
-''')
+                self.send(textwrap.dedent(
+                    b'''\
+                    MSRP dkei38sd SEND\r
+                    Message-ID: 4564dpWd\r
+                    Byte-Range: 1-*/8\r
+                    Content-Type: text/plain\r
+                    \r
+                    abcd\r
+                    -------dkei38sd+\r
+                    \r
+                    MSRP dkei38ia SEND\r
+                    Message-ID: 4564dpWd\r
+                    Byte-Range: 5-8/8\r
+                    Content-Type: text/plain\r
+                    \r
+                    EFGH\r
+                    -------dkei38ia$\r
+                    '''
+                ))
         return True
 
     def command(self, *args):
@@ -146,7 +147,7 @@ class MSRPProcess(multiprocessing.Process):
                     # incomming TCP connection
                     if sock:
                         sock.close()
-                    sock,remoteaddr = listeningsock.accept()
+                    sock, remoteaddr = listeningsock.accept()
                     log.info("%s connected to %s:%d", self, *remoteaddr)
 
                 elif obj == sock:
@@ -158,7 +159,7 @@ class MSRPProcess(multiprocessing.Process):
                         remoteaddr = None
                     else:
                         log.info("%s %s:%-5d <--- %s:%-5d MSRP\n%s", self, *sock.getsockname(), *remoteaddr, buf)
-                        
+
                 elif obj == self.pipe:
                     # incomming data from pipe = command from main program. possible commands:
                     #  -opensocket + localaddr + listening:
@@ -176,9 +177,9 @@ class MSRPProcess(multiprocessing.Process):
                     #     close socket if any
                     #     stop process
                     #     return ack
-                    command,param = self.pipe.recv()
+                    command, param = self.pipe.recv()
                     if command == 'opensocket':
-                        localaddr,listening = param
+                        localaddr, listening = param
                         try:
                             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         except Exception as exc:
@@ -189,7 +190,8 @@ class MSRPProcess(multiprocessing.Process):
                             localport = s.getsockname()[1]
                         except OSError as err:
                             s.close()
-                            exc = Exception("cannot bind TCP socket to {}. errno={}".format(localaddr, errno.errorcode[err.errno]))
+                            exc = Exception("cannot bind TCP socket to {}. errno={}".format(
+                                localaddr, errno.errorcode[err.errno]))
                             self.pipe.send(exc)
                             continue
                         except Exception as exc:
@@ -214,7 +216,7 @@ class MSRPProcess(multiprocessing.Process):
                         remoteaddr = param
                         try:
                             sock.connect(remoteaddr)
-                        except socket.timeout as err:
+                        except socket.timeout:
                             sock.close()
                             sock = None
                             exc = Exception("cannot connect to {}:{}. timeout".format(*remoteaddr))
@@ -223,7 +225,8 @@ class MSRPProcess(multiprocessing.Process):
                         except OSError as err:
                             sock.close()
                             sock = None
-                            exc = Exception("cannot connect to {}:{}. errno={}".format(*remoteaddr, errno.errorcode[err.errno]))
+                            exc = Exception("cannot connect to {}:{}. errno={}".format(
+                                *remoteaddr, errno.errorcode[err.errno]))
                             remoteaddr = None
                             self.pipe.send(exc)
                         else:

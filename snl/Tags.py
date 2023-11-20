@@ -5,34 +5,48 @@ import string
 
 _branchtemplate = 'z9hG4bK_{}'
 
+
 def settags(*, prefix='SIPandLove', shortprefix='SNL', suffix=''):
-    global _prefix,_shortprefix,_suffix
+    global _prefix, _shortprefix, _suffix
     _prefix = prefix
     _shortprefix = shortprefix
     _suffix = suffix
+
+
 settags()
 
 vowels = 'aeiouyAEIOUY'
 consonants = ''.join(set(string.ascii_lowercase) - set(vowels))
 CV = tuple([c+v for c in consonants for v in vowels])
 
-def randomstr():
-    return ''.join((_prefix, '_', random.choice(CV),random.choice(CV),random.choice(CV), _suffix))
+
+def word():
+    return ''.join((_prefix, '_', random.choice(CV), random.choice(CV), random.choice(CV), _suffix))
+
+
+def coloredvehicle():
+    return '_'.join((_shortprefix, random.choice(colors), random.choice(vehicles)))
+
 
 def branch(tag=None):
-    return _branchtemplate.format(tag or randomstr())
+    return _branchtemplate.format(tag or word())
+
 
 def fromto():
-    return randomstr()
-    
+    return word()
+
+
 callnum = 0
+
+
 def callid():
     global callnum
     callnum += 1
     num = str(callnum)
-    return '_'.join((_shortprefix, random.choice(colors), random.choice(vehicles), num))
+    return f'{coloredvehicle()}_{num}'
 
-colors=(
+
+colors = (
     "accented",
     "achromatic",
     "ashen",
@@ -274,7 +288,7 @@ colors=(
     "yellow"
 )
 
-vehicles=(
+vehicles = (
     "aerial-tramway",
     "aircraft",
     "aircraft-carrier",
